@@ -234,8 +234,10 @@ class ApprovalQueue:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w") as f:
                 json.dump(data, f)
+        except PermissionError:
+            pass  # 非 root 运行时跳过
         except Exception as exc:
-            logger.warning("persist  error: %s", exc)
+            logger.debug("persist  error: %s", exc)
 
     def _load_persisted(self) -> dict:
         """从磁盘加载持久化的待审批请求"""

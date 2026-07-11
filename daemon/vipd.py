@@ -20,6 +20,7 @@ import time
 from .approval_queue import ApprovalQueue
 from .executor import Executor
 from .socket_server import SocketServer
+from .audit import audit
 
 logger = logging.getLogger("vipd")
 
@@ -135,6 +136,7 @@ def main():
 
     # 启动
     server.start()
+    audit.start()
 
     # 主循环
     try:
@@ -146,6 +148,7 @@ def main():
         logger.info("正在关闭...")
         queue.clear()
         server.stop()
+        audit.stop()
         logger.info("VIP Daemon 已关闭")
 
 

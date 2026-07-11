@@ -26,6 +26,7 @@ from typing import Optional
 
 from .approval_queue import ApprovalQueue
 from .executor import Executor
+from .audit import audit
 
 logger = logging.getLogger("vipd.socket_server")
 
@@ -246,6 +247,7 @@ class SocketServer:
 
         # 1. 入队列
         entry = self._queue.submit(command, reason, origin)
+        audit.request(entry.req_id, command, origin.get("channel", "unknown"))
 
         # 2. 通过连接器发送审批通知
         self._notify_approval(entry)
@@ -338,6 +340,11 @@ class SocketServer:
             return
 
         ok = self._queue.resolve(req_id, action, connector, verified_by)
+        if ok:
+            if action == "approve":
+                audit.approve(req_id, connector, verified_by)
+            else:
+                audit.deny(req_id, connector, verified_by)
         _send_json(client, {
             "status": "ok" if ok else "not_found",
             "req_id": req_id,
