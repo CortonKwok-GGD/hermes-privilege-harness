@@ -65,6 +65,44 @@ MSG_SUDO_REQUEST = "sudo_request"
 MSG_APPROVAL_RESPONSE = "approval_response"
 MSG_REGISTER = "register"
 MSG_LIST_PENDING = "list_pending"
+MSG_GET_RESULT = "get_result"
+MSG_SUDO_EXECUTE = "sudo_execute"
+
+# ── 结果缓存 ──
+# req_id -> execution result (last 20 results kept)
+_results_cache: dict[str, dict] = {}
+_results_events: dict[str, threading.Event] = {}
+_results_lock = threading.Lock()
+MAX_CACHED_RESULTS = 20
+
+
+def _store_result(req_id: str, result: dict):
+    """Store execution result for retrieval by /vip-approve"""
+    with _results_lock:
+        _results_cache[req_id] = result
+        # Trim cache
+        while len(_results_cache) > MAX_CACHED_RESULTS:
+            _results_cache.pop(next(iter(_results_cache)), None)
+        # Signal waiters
+        if req_id in _results_events:
+            _results_events[req_id].set()
+            _results_events[req_id].clear()
+
+
+def _get_cached_result(req_id: str, timeout: float = 30):
+    """Wait for and retrieve a cached execution result"""
+    # Check if already cached
+    with _results_lock:
+        if req_id in _results_cache:
+            return _results_cache.pop(req_id)
+        _results_events[req_id] = threading.Event()
+    
+    # Wait with timeout
+    _results_events[req_id].wait(timeout=timeout)
+    
+    with _results_lock:
+        _results_events.pop(req_id, None)
+        return _results_cache.pop(req_id, None)
 
 # ── 跨平台对端 UID 获取 ──
 
@@ -310,6 +348,8 @@ class SocketServer:
 
             if req_type == MSG_SUDO_REQUEST:
                 self._handle_sudo_request(client, req)
+            elif req_type == MSG_SUDO_EXECUTE:
+                self._handle_sudo_execute(client, req)
             else:
                 _send_json(client, {
                     "status": "error",
@@ -380,6 +420,30 @@ class SocketServer:
             _send_json(client, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
         except: pass
 
+        # 9. 缓存结果（供 /vip-approve 取回）
+        _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
+
+    def _handle_sudo_execute(self, client: socket.socket, req: dict):
+        """处理直接执行请求（用户已通过原生卡片批准，跳过审批队列）"""
+        command = req.get("command", "")
+        reason = req.get("reason", "直接执行")
+        origin = req.get("origin", {})
+
+        if not isinstance(origin, dict):
+            origin = {"channel": "vip_sudo"}
+        if not command:
+            _send_json(client, {"status": "error", "error": "command required"})
+            return
+
+        logger.info("sudo_execute command=%s reason=%s", command[:60], reason[:30])
+        audit.request("direct", command, origin.get("channel", "vip_sudo"))
+
+        # 直接执行，跳过审批
+        exec_result = self._executor.execute(command)
+
+        _send_json(client, {"status": "approved", "result": exec_result})
+        logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))
+
     # ── 控制 socket 处理（含 UID 验证）──
 
     def _serve_control(self):
@@ -420,6 +484,8 @@ class SocketServer:
                 self._handle_connector_register(client, req)
             elif req_type == MSG_LIST_PENDING:
                 self._handle_list_pending(client, req)
+            elif req_type == MSG_GET_RESULT:
+                self._handle_get_result(client, req)
             else:
                 _send_json(client, {
                     "status": "error",
@@ -469,6 +535,18 @@ class SocketServer:
         """返回待审批列表"""
         pending = self._queue.list_pending()
         _send_json(client, {"status": "ok", "pending": pending})
+
+    def _handle_get_result(self, client: socket.socket, req: dict):
+        """返回已批准命令的执行结果"""
+        req_id = req.get("req_id", "")
+        if not req_id:
+            _send_json(client, {"status": "error", "error": "req_id required"})
+            return
+        result = _get_cached_result(req_id, timeout=30)
+        if result:
+            _send_json(client, result)
+        else:
+            _send_json(client, {"status": "error", "error": "Result not found or timed out"})
 
     # ── 审批通知 ──
 

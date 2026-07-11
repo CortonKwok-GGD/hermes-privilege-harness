@@ -21,6 +21,17 @@ if [ ! -f "$HERMES_BIN" ] && [ ! -f "$HERMES_HOME/bin/hermes" ]; then
 fi
 [ -f "$HERMES_BIN" ] || HERMES_BIN="$HERMES_HOME/bin/hermes"
 
+# ── Hermes 版本检测（>= v0.18 才支持原生审批卡）──
+HVER=$("$HERMES_BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
+version_gte() { printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | grep -qx "$1"; }
+if ! version_gte "$HVER" "0.18.0"; then
+    echo "❌ Hermes 版本过低 ($HVER < 0.18.0)"
+    echo "   VIP 需要 Hermes >= 0.18.0 才支持原生审批卡片"
+    echo "   请升级: hermes update"
+    exit 1
+fi
+echo "🆗 Hermes $HVER"
+
 # ── 0. 前置检查 ──
 echo ""
 echo "🔍 环境检查..."
@@ -73,19 +84,15 @@ fi
 echo "  ✅ $HERMES_HOME/plugins/hermes-vip/"
 
 # ── 3. 启用 Plugin ──
-sudo -u $REAL_USER python3 -c "
-import yaml, os
-path = '$HERMES_HOME/config.yaml'
-try:
-  with open(path) as f: cfg = yaml.safe_load(f) or {}
-except: cfg = {}
-cfg.setdefault('plugins', {}).setdefault('enabled', [])
-if 'hermes-vip' not in cfg['plugins']['enabled']:
-  cfg['plugins']['enabled'].append('hermes-vip')
-with open(path, 'w') as f: yaml.dump(cfg, f, default_flow_style=False)
-print('  ✅ Plugin 已启用
-')
-"
+echo "  正在启用 Plugin..."
+HERMES_BIN="$(sudo -u $REAL_USER which hermes 2>/dev/null || echo $HERMES_HOME/bin/hermes)"
+if [ -x "$HERMES_BIN" ]; then
+    sudo -u $REAL_USER $HERMES_BIN plugins enable hermes-vip 2>/dev/null && \
+        echo "  ✅ Plugin 已启用" || \
+        echo "  ⚠️  Plugin 启用失败，手动: hermes plugins enable hermes-vip"
+else
+    echo "  ⚠️  Hermes CLI 未找到，手动启用"
+fi
 echo ""
 
 # ── 4. 备份旧配置 ──

@@ -9,13 +9,27 @@
 
 ```
 名称：    Hermes VIP (Verified Interface Process)
-目标：    Hermes 的 root 提权闸门——LLM 看不到授权确认
+目标：    Hermes 的 root 提权闸门——一条明确的路：vip_sudo
 仓库：    ~/hermes-workspace/apps/hermes-vip/
-发布：    GitHub (待定)
-平台：    macOS (launchd) + Linux (systemd)
-通道：    复用 Hermes 网关通道（默认）/ 独立 Telegram bot（可选）
-状态：    🔴 规划中
+发布：    沙箱测试通过 (10.0.0.3)
+平台：    Linux (systemd) / macOS (launchd)
+架构：    方向 C（2026-07-11）— 简化版
+状态：    ✅ 沙箱验证通过
 ```
+
+## 架构变更记录（方向 C 重构）
+
+| 日期 | 变更 | 删除 | 新增/修改 |
+|------|------|------|-----------|
+| 2026-07-11 | **方向 C 简化** | `dangerous.py/dangerous_patterns.json` / `bwrap/` / `_fix_root_check.py` | `intercept.py` 重写（sudo 守卫 + 阻塞 handler） / `__init__.py` 简化 / `executor.py` 简化 / `test_flow.py` 流程测试 |
+
+### 核心变更
+
+1. **删除了 intercept/fake error/bwrap 三层混杂** → 改为明确的 sudo 守卫
+2. **修复了结果回不来** → plugin 保持 socket 连接，阻塞读最终结果
+3. **删除了 dangerous.py 模式检测** → VIP 是显式提权，不需要拦截检测
+4. **删除了所有 bwrap 引用** → 与 Electron 不兼容，简化架构
+5. **沙箱验证通过**（10.0.0.3）：approval_queue/executor/audit 4 组测试 + 完整 socket 流程测试
 
 ---
 
@@ -230,12 +244,12 @@ Connector ◀──(回调/通知)──── VIP Daemon (审批推送)
 
 ```
 Phase 0: 项目骨架    ████████████████  3/3 ✅
-Phase 1: Daemon 核心  ████████████░░░░  12/16 ✅
-Phase 2: Plugin      █████████░░░░░░░  7/12 ✅
-Phase 3: 安装部署    ████░░░░░░░░░░░░  3/6 🟡
-Phase 4: 文档发布    ██████░░░░░░░░░░  3/5 🟡
+Phase 1: Daemon 核心  ████████████████  11/11 ✅  (方向C: 移除了 dangerous, bwrap)
+Phase 2: Plugin      ████████████████  9/9 ✅   (方向C: 简化了 intercept + __init__)
+Phase 3: 安装部署    ████████████████  6/6 ✅   (沙箱验证通过)
+Phase 4: 文档发布    ████████████████  3/5 🟡
 
-总计: 28/42 ✅
+总计: 32/34 ✅  (方向C 简化后减少 8 项)
 ```
 
 ## 已完成的任务

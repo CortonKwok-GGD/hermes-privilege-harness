@@ -50,7 +50,27 @@ def handle_approve(args: str) -> str:
     })
 
     if result.get("status") == "ok":
-        return f"✅ 已批准请求 {req_id}"
+        # 批准成功，等结果
+        time.sleep(1)
+        exec_result = _send_to_control_socket({
+            "type": "get_result",
+            "req_id": req_id,
+        })
+        if exec_result.get("status") == "approved":
+            er = exec_result.get("result", {})
+            stdout = er.get("stdout", "").strip()
+            stderr = er.get("stderr", "").strip()
+            exit_code = er.get("exit_code", -1)
+
+            if exit_code == 0:
+                if stdout:
+                    return f"✅ 命令执行成功:\n{stdout[:2000]}"
+                return f"✅ 命令执行成功 (exit=0)"
+            else:
+                error = stderr or f"exit code {exit_code}"
+                return f"❌ 命令执行失败: {error[:500]}"
+        else:
+            return f"✅ 已批准请求 {req_id}（结果获取中，可稍后使用 vip_check 查看）"
     else:
         return f"❌ 批准失败: {result.get('error', '请求不存在或已处理')}"
 

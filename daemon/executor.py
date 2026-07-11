@@ -7,12 +7,11 @@ Executor — 命令执行器
 安全措施：
 - 超时自动 kill
 - stdout/stderr 大小限制
-- 高危命令检测（管道+shell 模式）
 """
 
 import logging
 import os
-import shlex
+import re
 import signal
 import subprocess
 import time
@@ -20,27 +19,13 @@ from typing import Optional
 
 logger = logging.getLogger("vipd.executor")
 
-# 高危模式（同 Hermes approvals 的检测逻辑）
-from .dangerous import check as _danger_check
-
 
 class Executor:
     """命令执行器"""
 
-    def __init__(self, timeout: int = 300, max_stdout: int = 50000,
-                 detect_dangerous: bool = True):
+    def __init__(self, timeout: int = 300, max_stdout: int = 50000):
         self._timeout = timeout
         self._max_stdout = max_stdout
-        self._detect_dangerous = detect_dangerous
-
-    def check_dangerous(self, command: str) -> Optional[str]:
-        if not self._detect_dangerous:
-            return None
-        from .dangerous import check as dc
-        hits = dc(command)
-        if hits:
-            return f"high_risk: {', '.join(hits)}"
-        return None
 
     def execute(self, command: str, timeout: Optional[int] = None,
                 env: Optional[dict] = None) -> dict:
@@ -53,12 +38,9 @@ class Executor:
             env: 额外环境变量
 
         Returns:
-            {stdout, stderr, exit_code, executed_at, duration_ms, danger_warning}
+            {stdout, stderr, exit_code, executed_at, duration_ms}
         """
         start = time.time()
-
-        # 高危检测
-        danger_warning = self.check_dangerous(command)
 
         result = {
             "stdout": "",
@@ -66,14 +48,15 @@ class Executor:
             "exit_code": -1,
             "executed_at": start,
             "duration_ms": 0,
-            "danger_warning": danger_warning,
         }
 
         actual_timeout = timeout or self._timeout
 
         try:
+            # Strip any leading "sudo" from the command to avoid nested sudo
+            clean_cmd = re.sub(r"^\s*sudo\s+", "", command, count=1, flags=re.IGNORECASE)
             proc = subprocess.Popen(
-                ["/bin/sh", "-c", command],
+                ["/bin/sh", "-c", f"sudo {clean_cmd}"],
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
