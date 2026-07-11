@@ -170,19 +170,19 @@ def _register_builtin_connectors(server: SocketServer, config: dict):
 
     # hermes_gateway 连接器
     if connectors_cfg.get("hermes_gateway", {}).get("enabled", True):
-        from ..connectors.hermes_gateway import send_approval
+        from connectors.hermes_gateway import send_approval
         server.register_connector("hermes_gateway", send_approval)
         logger.info("connector 'hermes_gateway' enabled")
 
     # CLI 连接器
     if connectors_cfg.get("cli", {}).get("enabled", True):
-        from ..connectors.cli import send_approval
+        from connectors.cli import send_approval
         server.register_connector("cli", send_approval)
         logger.info("connector 'cli' enabled")
 
     # OS Dialog 连接器
     if connectors_cfg.get("os_dialog", {}).get("enabled", False):
-        from ..connectors.os_dialog import send_approval
+        from connectors.os_dialog import send_approval
         server.register_connector("os_dialog", send_approval)
         logger.info("connector 'os_dialog' enabled")
 
