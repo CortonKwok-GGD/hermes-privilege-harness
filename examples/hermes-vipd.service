@@ -12,11 +12,19 @@ RestartSec=5
 StandardOutput=append:/var/log/hermes-vip/stdout.log
 StandardError=append:/var/log/hermes-vip/stderr.log
 
+# Runtime directories
+RuntimeDirectory=hermes-vip
+RuntimeDirectoryMode=0700
+LogsDirectory=hermes-vip
+LogsDirectoryMode=0755
+ConfigurationDirectory=hermes-vip
+ConfigurationDirectoryMode=0700
+
 # Security hardening
 NoNewPrivileges=yes
 ProtectHome=yes
-ProtectSystem=strict
-ReadOnlyPaths=/etc/hermes-vip/
+ProtectSystem=full
+ReadWritePaths=/var/run/hermes-vip /var/log/hermes-vip
 
 [Install]
 WantedBy=multi-user.target
