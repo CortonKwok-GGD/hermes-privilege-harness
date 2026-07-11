@@ -1,0 +1,27 @@
+# Hermes VIP - .gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Runtime
+/var/run/hermes-vip/
+*.pid
+*.sock
+
+# Config
+/etc/hermes-vip/
+
+# Logs
+*.log

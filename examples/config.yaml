@@ -1,0 +1,34 @@
+# Hermes VIP — 配置模板
+# 安装后放到 /etc/hermes-vip/config.yaml
+
+daemon:
+  uid: 0                # 运行用户（root）
+  gid: 0                # 运行组
+  log_level: info       # debug | info | warn | error
+  audit_log: /var/log/hermes-vip/audit.log
+
+sockets:
+  request: /var/run/hermes-vip/request.sock
+  control: /var/run/hermes-vip/control.sock
+
+approval:
+  ttl_seconds: 300      # 审批超时（5 分钟）
+  default_reason: "提权请求"  # 未提供原因时的默认文案
+
+executor:
+  timeout: 300          # 命令执行超时
+  max_stdout_bytes: 50000
+  detect_dangerous: true  # 高危命令检测（管道+shell 等）
+
+connectors:
+  # 默认：复用 Hermes 网关通道
+  hermes_gateway:
+    enabled: true
+
+  # 可选：CLI approve
+  cli:
+    enabled: true
+
+  # 可选：OS 弹框
+  os_dialog:
+    enabled: false

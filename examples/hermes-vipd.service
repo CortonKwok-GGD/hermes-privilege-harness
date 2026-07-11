@@ -1,0 +1,22 @@
+[Unit]
+Description=Hermes VIP Daemon — Root privilege escalation gateway
+After=network.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+ExecStart=/usr/local/bin/hermes-vipd
+Restart=always
+RestartSec=5
+StandardOutput=append:/var/log/hermes-vip/stdout.log
+StandardError=append:/var/log/hermes-vip/stderr.log
+
+# Security hardening
+NoNewPrivileges=yes
+ProtectHome=yes
+ProtectSystem=strict
+ReadOnlyPaths=/etc/hermes-vip/
+
+[Install]
+WantedBy=multi-user.target
