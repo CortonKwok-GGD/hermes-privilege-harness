@@ -1,47 +1,56 @@
 """
-Hermes VIP Plugin — Hermes Agent 集成插件
+Hermes VIP Plugin — 三层安全防护
 
-在 Hermes 中注册：
-1. vip_sudo 工具 — LLM 调用来提交提权请求
-2. /vip-approve 命令 — 绕过 LLM 批准请求
-3. /vip-deny 命令 — 绕过 LLM 拒绝请求
-4. /vip-pending 命令 — 查看待审列表
+1. pre_llm_call: 首轮注入 sandbox 提示（强引导）
+2. pre_tool_call: 拦截 terminal sudo 命令
+3. vip_sudo 工具：显式提权通道
 """
 
-import json
 import logging
+import re
 
 from . import intercept, gateway_handler
 
 logger = logging.getLogger("hermes-vip.plugin")
 
+SUDO_RE = re.compile(r"^\s*sudo\s")
+
+# 首轮 sandbox 提示
+SANDBOX_INSTRUCTION = (
+    "[SYSTEM]: 你运行在安全沙箱中，不能直接修改系统。\n"
+    "如果需要执行需要管理员权限的操作（安装软件、修改配置等），"
+    "请使用 vip_sudo 工具提交提权请求，等待用户批准后执行。"
+)
+
 
 def register(ctx):
-    """Plugin 入口：Hermes Agent 启动时调用"""
+    # ── 1. pre_llm_call：首轮注入 sandbox 提示 ──
+    ctx.register_hook("pre_llm_call", _inject_sandbox_hint)
 
-    # ── 1. 注册 vip_sudo 工具 ──
-    # LLM 调此工具代替 terminal("sudo ...")
+    # ── 2. pre_tool_call：拦截 terminal sudo ──
+    ctx.register_hook("pre_tool_call", _intercept_sudo)
+
+    # ── 3. vip_sudo 工具 ──
     ctx.register_tool(
         name="vip_sudo",
-        toolset="terminal",  # 挂在 terminal toolset 下
+        toolset="terminal",
         description=(
-            "通过 VIP 守护进程执行需要 root 权限的命令。"
-            "LLM 看不到审批结果，命令由 root 进程执行。"
-            "当 LLM 需要 sudo 时调用此工具替代 terminal。"
+            "执行需要管理员权限的命令（安装/卸载软件、修改系统配置等）。"
+            "普通 terminal 没有权限时，用此工具提交审批。"
         ),
         schema={
             "name": "vip_sudo",
-            "description": "执行需要 root 权限的命令（经 VIP 审批）",
+            "description": "提交管理员权限请求",
             "parameters": {
                 "type": "object",
                 "properties": {
                     "command": {
                         "type": "string",
-                        "description": "需要 root 权限执行的 shell 命令"
+                        "description": "需要管理员权限执行的命令"
                     },
                     "reason": {
                         "type": "string",
-                        "description": "为什么需要执行此命令（显示在审批卡上）"
+                        "description": "为什么需要执行此命令"
                     }
                 },
                 "required": ["command"]
@@ -50,47 +59,52 @@ def register(ctx):
         handler=_handle_vip_sudo,
         is_async=False,
     )
-    logger.info("registered tool: vip_sudo")
+    logger.info("vip_sudo registered")
 
-    # ── 2. 注册网关斜杠命令 ──
-    # 这些命令绕过 LLM，由网关直接路由到 handler
-    # handler 签名: fn(raw_args: str) -> str | None
-
+    # ── 4. 斜杠命令（绕过 LLM）──
     ctx.register_command(
         name="vip-approve",
-        handler=lambda args, ctx={}: gateway_handler.handle_approve(args, ctx),
+        handler=gateway_handler.handle_approve,
         description="批准 VIP 提权请求",
         args_hint="<req_id>",
     )
-    logger.info("registered command: /vip-approve")
-
     ctx.register_command(
         name="vip-deny",
-        handler=lambda args, ctx={}: gateway_handler.handle_deny(args, ctx),
+        handler=gateway_handler.handle_deny,
         description="拒绝 VIP 提权请求",
         args_hint="<req_id>",
     )
-    logger.info("registered command: /vip-deny")
-
     ctx.register_command(
         name="vip-pending",
-        handler=lambda args, ctx={}: gateway_handler.handle_pending(args, ctx),
+        handler=gateway_handler.handle_pending,
         description="查看待处理的 VIP 提权请求",
     )
-    logger.info("registered command: /vip-pending")
+    logger.info("hermes-vip plugin ready")
 
-    # ── 3. 预留给 CLI 子命令 ──
-    # 未来可注册 hermes vip 子命令
-    # ctx.register_cli_command(
-    #     name="vip",
-    #     help="VIP daemon 管理命令",
-    #     setup_fn=_setup_vip_subparser,
-    # )
+
+def _inject_sandbox_hint(**kwargs):
+    """pre_llm_call：首轮对话注入 sandbox 提示"""
+    is_first = kwargs.get("is_first_turn", False)
+    if is_first:
+        logger.debug("injecting sandbox hint")
+        return {"context": SANDBOX_INSTRUCTION}
+    return None
+
+
+def _intercept_sudo(tool_name, args, **kwargs):
+    """pre_tool_call：拦截 terminal sudo"""
+    if tool_name != "terminal":
+        return None
+    command = args.get("command", "")
+    if not SUDO_RE.match(command):
+        return None
+    logger.info("intercepted sudo: %s", command[:60])
+    reason = args.get("reason", "提权请求")
+    result = intercept.handle_vip_sudo(command, reason)
+    return {"action": "return_immediately", "result": result}
 
 
 def _handle_vip_sudo(command: str, reason: str = "", **kwargs) -> str:
-    """vip_sudo 工具的处理函数（同步，返回字符串）"""
     if not reason:
         reason = "提权请求"
-    result = intercept.handle_vip_sudo(command, reason)
-    return result
+    return intercept.handle_vip_sudo(command, reason)
