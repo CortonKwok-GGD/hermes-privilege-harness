@@ -344,40 +344,41 @@ class SocketServer:
         entry = self._queue.submit(command, reason, origin)
         audit.request(entry.req_id, command, origin.get("channel", "unknown"))
 
-        # 2. 通过连接器发送审批通知
+        # 2. 立即返回 req_id（不等审批）
+        _send_json(client, {
+            "status": "pending",
+            "req_id": entry.req_id,
+            "expires_at": entry.expires_at,
+        })
+
+        # 3. 通过连接器发送审批通知
         self._notify_approval(entry)
 
-        # 3. 等待审批结果
+        # 4. 等待审批结果（异步）
         entry.event.wait()
 
-        # 4. 如果超时被 reaper 收割
+        # 5. 如果超时被 reaper 收割
         if not entry.resolved:
-            _send_json(client, {
-                "status": "timeout",
-                "req_id": entry.req_id,
-                "error": "审批超时",
-            })
+            try:
+                _send_json(client, {"status": "timeout", "req_id": entry.req_id, "error": "审批超时"})
+            except: pass
             return
 
-        # 5. 审批结果
+        # 6. 审批结果
         decision = entry.result
         if decision["action"] != "approve":
-            _send_json(client, {
-                "status": "denied",
-                "req_id": entry.req_id,
-                "error": f"已拒绝（{decision.get('connector', 'unknown')}）",
-            })
+            try:
+                _send_json(client, {"status": "denied", "req_id": entry.req_id, "error": f"已拒绝"})
+            except: pass
             return
 
-        # 6. 执行命令
+        # 7. 执行命令
         exec_result = self._executor.execute(command)
 
-        # 7. 返回结果
-        _send_json(client, {
-            "status": "approved",
-            "req_id": entry.req_id,
-            "result": exec_result,
-        })
+        # 8. 返回结果（client 可能已断开）
+        try:
+            _send_json(client, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
+        except: pass
 
     # ── 控制 socket 处理（含 UID 验证）──
 
