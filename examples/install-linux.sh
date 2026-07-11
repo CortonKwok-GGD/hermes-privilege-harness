@@ -169,7 +169,7 @@ Description=Hermes VIP Daemon
 After=network.target
 [Service]
 Type=simple
-User=root
+User=hermes-vip
 ExecStart=/usr/local/bin/hermes-vipd
 Restart=always
 RuntimeDirectory=hermes-vip
