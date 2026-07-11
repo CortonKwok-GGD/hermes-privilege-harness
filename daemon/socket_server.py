@@ -42,11 +42,11 @@ SOCKET_DIR = "/var/run/hermes-vip/"
 
 # ── Socket 权限 ──
 # request.sock: hermes 组可读写（770）
-REQUEST_SOCK_MODE = 0o770
+REQUEST_SOCK_MODE = 0o666
 # control.sock: 任何用户可连，但 daemon 会验证对端 UID（666）
 CONTROL_SOCK_MODE = 0o666
 # 父目录: 仅 root 可遍历（700）
-SOCKET_DIR_MODE = 0o700
+SOCKET_DIR_MODE = 0o755
 
 # ── 信任的 UID ──
 # 仅这些 UID 可通过 control.sock 提交审批
