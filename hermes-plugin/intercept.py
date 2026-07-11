@@ -1,5 +1,5 @@
 """
-Intercept — terminal 命令先走 bwrap 沙箱，失败才走 VIP
+Intercept — 沙箱拦截 + 聊天窗口审批提示
 """
 
 import json
@@ -21,13 +21,13 @@ BWRAP = "/usr/local/bin/hermes-bwrap-exec"
 
 def handle_terminal(command: str, reason: str = "") -> dict:
     """
-    处理 terminal 命令：先试 bwrap，失败走 VIP。
-    
-    Returns: {"action": "return_immediately", "result": str}
+    处理 terminal 命令：
+    1. 非 sudo → 先试 bwrap → 成功则返回结果
+    2. sudo 或 bwrap 失败 → 走 VIP
     """
     is_sudo = bool(SUDO_RE.match(command))
 
-    # 非 sudo 命令先试 bwrap
+    # 非 sudo 先试 bwrap
     if not is_sudo and os.path.exists(BWRAP):
         try:
             result = subprocess.run(
@@ -36,24 +36,20 @@ def handle_terminal(command: str, reason: str = "") -> dict:
             )
             if result.returncode == 0:
                 return {"action": "return_immediately", "result": result.stdout}
-            # bwrap 失败了（可能没权限），fallthrough 到 VIP
         except Exception:
             pass
 
-    # sudo 或 bwrap 失败 → 走 VIP
+    # sudo 或 bwrap 失败 → VIP
     if is_sudo or os.path.exists(BWRAP):
         return _vip_flow(command, reason or "提权请求")
 
-    # 没有 bwrap，直接放行
     return None
 
 
 def _vip_flow(command: str, reason: str) -> dict:
-    """提交 VIP daemon 并等待审批"""
-    # Kill 文件检查
+    """提交 VIP daemon，返回 chat 审批引导文字"""
     if os.path.exists(KILL_FILE):
-        return {"action": "return_immediately",
-                "result": "sudo: command not found"}
+        return {"action": "return_immediately", "result": "sudo: command not found"}
 
     # 连接 VIP daemon
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -63,55 +59,34 @@ def _vip_flow(command: str, reason: str) -> dict:
     except (FileNotFoundError, ConnectionRefusedError) as exc:
         logger.warning("VIP daemon 未运行: %s", exc)
         return {"action": "return_immediately",
-                "result": "需要管理员权限，请在对话中输入 /vip-pending"}
+                "result": "需要管理员权限：/vip-pending"}
 
-    # 提交请求
-    req = {
-        "type": "sudo_request",
-        "command": command,
-        "reason": reason,
-        "origin": {"channel": "cli", "timestamp": time.time()},
-    }
+    # 提交
+    req = {"type": "sudo_request", "command": command, "reason": reason,
+           "origin": {"channel": "cli", "timestamp": time.time()}}
     payload = json.dumps(req).encode()
     sock.sendall(struct.pack("!I", len(payload)) + payload)
 
-    # 收 pending 响应（立即返回）
+    # 收 pending 响应
     raw_len = sock.recv(4, socket.MSG_WAITALL)
-    if raw_len:
-        resp = json.loads(sock.recv(struct.unpack("!I", raw_len)[0], socket.MSG_WAITALL))
-        req_id = resp.get("req_id", "")
-        if req_id:
-            # 桌面通知
-            _notify(f"🔐 提权请求", f"命令: {command[:50]}")
+    if not raw_len:
+        sock.close()
+        return {"action": "return_immediately", "result": "需要管理员权限：/vip-pending"}
 
-            # 等审批结果
-            raw_len = sock.recv(4, socket.MSG_WAITALL)
-            if raw_len:
-                result = json.loads(sock.recv(struct.unpack("!I", raw_len)[0], socket.MSG_WAITALL))
-                sock.close()
-                if result.get("status") == "approved":
-                    exec_r = result.get("result", {})
-                    return {"action": "return_immediately",
-                            "result": exec_r.get("stdout", "")}
-                return {"action": "return_immediately",
-                        "result": "命令被拒绝"}
-            
-            return {"action": "return_immediately",
-                    "result": "审批超时，请输入 /vip-pending 查看"}
-
+    resp = json.loads(sock.recv(struct.unpack("!I", raw_len)[0], socket.MSG_WAITALL))
+    req_id = resp.get("req_id", "")
     sock.close()
-    return {"action": "return_immediately",
-            "result": "需要管理员权限，请输入 /vip-pending"}
 
+    if not req_id:
+        return {"action": "return_immediately", "result": "需要管理员权限：/vip-pending"}
 
-def _notify(title: str, msg: str):
-    """发送桌面通知"""
-    try:
-        subprocess.run(["notify-send", title, msg, "-i", "dialog-password"],
-                       timeout=3, stderr=subprocess.DEVNULL)
-    except Exception:
-        pass
+    # 聊天窗口显示审批卡（而不是弹窗）
+    card = (
+        f"\n🔐 提权请求 #{req_id[:8]}\n"
+        f"  命令: {command[:60]}\n"
+        f"  原因: {reason}\n"
+        f"  /vip-approve {req_id[:8]}   — 批准\n"
+        f"  /vip-deny {req_id[:8]}      — 拒绝"
+    )
 
-
-# 保留旧接口兼容
-handle_vip_sudo = lambda cmd, reason="": _vip_flow(cmd, reason)
+    return {"action": "return_immediately", "result": card}
