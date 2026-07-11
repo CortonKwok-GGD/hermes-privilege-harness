@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-User=root
+User=hermes-vip
 Group=root
 ExecStart=/usr/local/bin/hermes-vipd
 Restart=always

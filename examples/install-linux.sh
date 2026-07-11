@@ -26,8 +26,8 @@ echo ""
 echo "🔍 环境检查..."
 
 # 0a. 用户同意
-echo "  VIP Daemon 将以 root 身份运行，负责执行提权命令。"
-echo "  请确认："
+echo "  将创建 hermes-vip 用户（不可登录、不可 SSH）"
+echo "  该用户用于执行你批准后的提权命令。"
 read -p "是否继续安装 VIP？[Y/n] " consent
 case "$consent" in
   [nN]|[nN][oO]) echo "❌ 已取消"; exit 1 ;;
@@ -93,7 +93,23 @@ if [ -f /etc/hermes-vip/config.yaml ]; then
   echo "  ✅ 旧配置已备份到 config.yaml.bak.$(date +%Y%m%d)"
 fi
 
-# ── 5. 安装 Daemon（需要 root）──
+# ── 5. 创建提权用户
+if ! id hermes-vip >/dev/null 2>&1; then
+  echo "  📋 创建提权用户 hermes-vip..."
+  sudo useradd -r -s /sbin/nologin hermes-vip
+  echo "    ✅ hermes-vip 已创建（不可登录、不可 SSH）"
+fi
+
+# ── 6. sudoers
+if [ ! -f /etc/sudoers.d/hermes-vip ]; then
+  sudo tee /etc/sudoers.d/hermes-vip > /dev/null << SUDOERS
+hermes-vip ALL=(ALL) NOPASSWD: ALL
+SUDOERS
+  sudo chmod 440 /etc/sudoers.d/hermes-vip
+  echo "  ✅ sudoers 已配置"
+fi
+
+# ── 7. 安装 Daemon（需要 root）──
 if [ "$EUID" -ne 0 ]; then
   echo "🔧 需要 root 权限安装 daemon：sudo $0"
   exit 0
@@ -129,7 +145,8 @@ sockets:
   request: $VIP_RUN/request.sock
   control: $VIP_RUN/control.sock
 CONF
-  sudo chmod 600 $VIP_ETC/config.yaml
+  sudo chmod 640 $VIP_ETC/config.yaml
+  sudo chown hermes-vip:hermes-vip $VIP_ETC/config.yaml
 fi
 
 # ── 7. 注册服务 ──
@@ -162,7 +179,8 @@ WantedBy=multi-user.target
 SERVICE
   sudo systemctl daemon-reload
   sudo systemctl enable hermes-vipd 2>/dev/null
-  sudo systemctl start hermes-vipd
+  sudo chown hermes-vip:hermes-vip /etc/hermes-vip/config.yaml 2>/dev/null || true
+sudo systemctl start hermes-vipd
 fi
 
 sleep 2
@@ -179,7 +197,7 @@ echo ""
 echo "┌─────────────────────────────────────────────┐"
 echo "│  ✅ 安装完成                                 │"
 echo "│                                             │"
-echo "│  请重新打开 Hermes Desktop                    │"
+echo "│  Hermes Desktop 已就绪                        │"
 echo "│  对话中可使用:                                │"
 echo "│    /vip-pending   查看待审批                 │"
 echo "│    /vip-approve   批准请求                   │"
