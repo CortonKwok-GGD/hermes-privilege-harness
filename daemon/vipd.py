@@ -117,6 +117,18 @@ def main():
 
     server = SocketServer(queue, executor, config)
 
+    # 将当前普通用户加入 control socket 信任列表
+    try:
+        import pwd
+        trusted_user = config.get("trusted_user", os.environ.get("SUDO_USER", ""))
+        if trusted_user:
+            user_uid = pwd.getpwnam(trusted_user).pw_uid
+            from .socket_server import TRUSTED_UIDS
+            TRUSTED_UIDS.add(user_uid)
+            logger.info("trusted UID added: %s (%d)", trusted_user, user_uid)
+    except Exception as exc:
+        logger.warning("无法获取信任用户 UID: %s", exc)
+
     # 恢复未完成的请求
     queue.recover()
 

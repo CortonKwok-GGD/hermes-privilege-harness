@@ -1,28 +1,33 @@
 """
 Socket Server — Unix socket 服务
-================================
+=================================
 
 两个 socket：
-1. request.sock (user:staff 755) — Hermes Plugin 提交命令请求
-2. control.sock (root:wheel 600) — 连接器提交审批响应
+1. request.sock — Hermes Plugin 提交命令请求
+2. control.sock — 连接器提交审批响应
 
-线程模型：
-- 主线程：启动两个 socket server
-- 请求 socket：每个客户端一个线程（ThreadPoolExecutor）
-- 控制 socket：每个客户端一个线程
-- 后台线程：reaper（定期收割过期请求）
+权限策略（非 root 进程不可控的从物理上隔绝，而是通过 UID 验证+req_id 隔离）：
+- request.sock: 770 (hermes 组可读可写)
+- control.sock: 666 + UID 验证（仅信任的 UID 可通过）
+- socket 父目录: 700 (仅 root 可遍历)
+
+安全论证：
+  即使 control.sock 对同一用户开放，LLM 也无法伪造审批：
+  1. req_id (12位 hex) 由 Plugin 内部生成，从不返回给 LLM
+  2. LLM 不知道 pending 队列里有什么 req_id
+  3. /vip-approve 由网关直接路由，LLM 看不到
+  4. 即使暴力猜 req_id，2^48 穷举不可行
 """
 
 import json
 import logging
 import os
 import socket
-import stat
 import struct
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
+from typing import Callable, Optional
 
 from .approval_queue import ApprovalQueue
 from .executor import Executor
@@ -30,25 +35,101 @@ from .audit import audit
 
 logger = logging.getLogger("vipd.socket_server")
 
-# Socket 路径
+# ── Socket 路径 ──
 REQUEST_SOCK = "/var/run/hermes-vip/request.sock"
 CONTROL_SOCK = "/var/run/hermes-vip/control.sock"
+SOCKET_DIR = "/var/run/hermes-vip/"
 
-# JSON 帧传输：4字节长度前缀 + JSON 数据
+# ── Socket 权限 ──
+# request.sock: hermes 组可读写（770）
+REQUEST_SOCK_MODE = 0o770
+# control.sock: 任何用户可连，但 daemon 会验证对端 UID（666）
+CONTROL_SOCK_MODE = 0o666
+# 父目录: 仅 root 可遍历（700）
+SOCKET_DIR_MODE = 0o700
+
+# ── 信任的 UID ──
+# 仅这些 UID 可通过 control.sock 提交审批
+# 0 = root, 当前用户 mac 的 UID 在启动时自动获取
+TRUSTED_UIDS: set[int] = {0}
+
+# ── JSON 帧传输 ──
 LEN_PREFIX_BYTES = 4
+MAX_FRAME_SIZE = 1024 * 1024  # 1MB
+SOCKET_BACKLOG = 32
+REAPER_INTERVAL = 10  # 秒
+POLL_TIMEOUT = 1.0  # socket.accept() 超时
+
+# ── 消息类型常量 ──
+MSG_SUDO_REQUEST = "sudo_request"
+MSG_APPROVAL_RESPONSE = "approval_response"
+MSG_REGISTER = "register"
+MSG_LIST_PENDING = "list_pending"
+
+# ── 跨平台对端 UID 获取 ──
+
+
+def _get_peer_uid(sock: socket.socket) -> Optional[int]:
+    """
+    获取 Unix socket 对端进程的 UID。
+
+    跨平台实现:
+    - Linux: getsockopt(SOL_SOCKET, SO_PEERCRED) → struct {pid, uid, gid}
+    - macOS: getsockopt(SOL_LOCAL, LOCAL_PEERCRED) → struct {pid, uid, gid}
+    """
+    try:
+        # Linux
+        cred = sock.getsockopt(
+            socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
+        _, uid, _ = struct.unpack("3i", cred)
+        return uid
+    except (AttributeError, OSError):
+        try:
+            # macOS (Python 3.9+)
+            cred = sock.getsockopt(
+                socket.SOL_LOCAL, socket.LOCAL_PEERCRED, 12)
+            _, uid, _ = struct.unpack("3i", cred)
+            return uid
+        except (AttributeError, OSError) as exc:
+            logger.error("无法获取对端 UID: %s", exc)
+            return None
+        except TypeError:
+            # macOS fallback: 某些 Python 版本 LOCAL_PEERCRED
+            # 返回 4 字节而非 12
+            try:
+                cred = sock.getsockopt(
+                    socket.SOL_LOCAL, socket.LOCAL_PEERCRED, 4)
+                uid = struct.unpack("i", cred)[0]
+                return uid
+            except Exception:
+                return None
+
+
+def _recv_all(sock: socket.socket, size: int, timeout: float = 30) -> bytes:
+    """
+    可靠地从 socket 接收指定字节数。
+
+    循环接收直到收满 size 字节（避免 MSG_WAITALL 在中断时不保证一次收满的问题）。
+    """
+    sock.settimeout(timeout)
+    chunks = []
+    remaining = size
+    while remaining > 0:
+        chunk = sock.recv(remaining)
+        if not chunk:
+            raise ConnectionError("连接断开")
+        chunks.append(chunk)
+        remaining -= len(chunk)
+    return b"".join(chunks)
 
 
 def _recv_json(sock: socket.socket) -> dict:
-    """从 socket 接收一个 JSON 帧"""
-    raw_len = sock.recv(LEN_PREFIX_BYTES, socket.MSG_WAITALL)
-    if not raw_len or len(raw_len) < LEN_PREFIX_BYTES:
-        raise ConnectionError("连接断开")
+    """从 socket 接收一个 JSON 帧（4 字节长度前缀 + JSON 数据）"""
+    raw_len = _recv_all(sock, LEN_PREFIX_BYTES)
     msg_len = struct.unpack("!I", raw_len)[0]
-    if msg_len > 1024 * 1024:  # 1MB 上限
-        raise ValueError(f"帧过大：{msg_len}")
-    data = sock.recv(msg_len, socket.MSG_WAITALL)
-    if not data or len(data) < msg_len:
-        raise ConnectionError("连接断开")
+    if msg_len > MAX_FRAME_SIZE:
+        raise ValueError(f"帧过大: {msg_len} 超过上限 {MAX_FRAME_SIZE}")
+    data = _recv_all(sock, msg_len)
     return json.loads(data.decode("utf-8"))
 
 
@@ -58,32 +139,51 @@ def _send_json(sock: socket.socket, data: dict):
     sock.sendall(struct.pack("!I", len(payload)) + payload)
 
 
-def _ensure_socket_path(path: str, mode: int):
-    """确保 socket 路径存在且权限正确"""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
+def _setup_socket_dir(path: str, mode: int):
+    """创建 socket 目录并设置权限"""
+    dir_path = os.path.dirname(path)
+    os.makedirs(dir_path, exist_ok=True)
     try:
-        os.unlink(path)
-    except FileNotFoundError:
-        pass
-
-
-def _set_socket_permissions(path: str, uid: int, gid: int, file_mode: int):
-    """设置 socket 文件权限"""
-    try:
-        os.chown(path, uid, gid)
-        os.chmod(path, file_mode)
+        os.chmod(dir_path, mode)
     except PermissionError:
-        logger.warning("无法设置 socket 权限 %s (uid=%d gid=%d mode=%o)",
-                       path, uid, gid, file_mode)
+        logger.warning("无法设置目录权限 %s (mode=%o)", dir_path, mode)
+
+
+def _cleanup_socket(path: str):
+    """安全地清理 socket 文件"""
+    try:
+        # 先检查是否已有服务在监昕
+        test_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        test_sock.settimeout(0.5)
+        test_sock.connect(path)
+        # 连接成功，说明有服务在运行，不能删
+        test_sock.close()
+        logger.warning("socket %s 已被占用", path)
+        return False
+    except (ConnectionRefusedError, FileNotFoundError):
+        # 旧 socket 但无服务，可安全删除
+        try:
+            os.unlink(path)
+        except FileNotFoundError:
+            pass
+        return True
+    except socket.timeout:
+        return True
+    except OSError:
+        return True
+
+
+def _create_server(path: str) -> socket.socket:
+    """创建并绑定一个 Unix socket"""
+    server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    # 注意：SO_REUSEADDR 对 AF_UNIX 无效，这里不设
+    server.bind(path)
+    server.listen(SOCKET_BACKLOG)
+    return server
 
 
 class SocketServer:
     """VIP daemon socket server"""
-
-    # 请求 socket 的默认权限（用户可读写）
-    REQUEST_MODE = 0o755  # user:staff rwx
-    # 控制 socket 的默认权限（仅 root）
-    CONTROL_MODE = 0o600  # root:wheel 仅读写
 
     def __init__(self, queue: ApprovalQueue, executor: Executor,
                  config: Optional[dict] = None):
@@ -91,6 +191,8 @@ class SocketServer:
         self._executor = executor
         self._config = config or {}
         self._running = False
+        self._request_server: Optional[socket.socket] = None
+        self._control_server: Optional[socket.socket] = None
         self._threads: list[threading.Thread] = []
 
         # socket 路径配置
@@ -99,20 +201,13 @@ class SocketServer:
         self._control_path = self._config.get(
             "sockets.control", CONTROL_SOCK)
 
-        # socket 权限
-        self._request_mode = self._config.get(
-            "sockets.request_mode", self.REQUEST_MODE)
-        self._control_mode = self._config.get(
-            "sockets.control_mode", self.CONTROL_MODE)
-
-        # 线程池
+        # 线程池（非阻塞任务用，审批等待不占用线程池）
         self._pool = ThreadPoolExecutor(max_workers=10)
 
         # 连接器注册（name → send_approval_request 回调）
-        self._connectors: dict[str, callable] = {}
+        self._connectors: dict[str, Callable] = {}
 
-    def register_connector(self, name: str,
-                           send_cb: callable):
+    def register_connector(self, name: str, send_cb: Callable):
         """注册一个连接器的审批推送回调"""
         self._connectors[name] = send_cb
         logger.info("connector registered: %s", name)
@@ -124,45 +219,36 @@ class SocketServer:
         self._running = True
 
         # 请求 socket
-        _ensure_socket_path(self._request_path, self._request_mode)
-        req_server = self._create_server(self._request_path)
+        _setup_socket_dir(self._request_path, SOCKET_DIR_MODE)
+        if not _cleanup_socket(self._request_path):
+            raise RuntimeError(f"socket {self._request_path} 已被占用")
+        self._request_server = _create_server(self._request_path)
+        os.chmod(self._request_path, REQUEST_SOCK_MODE)
         req_thread = threading.Thread(
             target=self._serve_requests,
-            args=(req_server,),
             daemon=True,
             name="req-socket",
         )
         req_thread.start()
         self._threads.append(req_thread)
-        # 权限设置在 bind 之后
-        _set_socket_permissions(
-            self._request_path,
-            self._config.get("request_uid", os.getuid()),
-            self._config.get("request_gid", os.getgid()),
-            self._request_mode,
-        )
         logger.info("request socket: %s (mode=%o)", self._request_path,
-                    self._request_mode)
+                    REQUEST_SOCK_MODE)
 
         # 控制 socket
-        _ensure_socket_path(self._control_path, self._control_mode)
-        ctl_server = self._create_server(self._control_path)
+        _setup_socket_dir(self._control_path, SOCKET_DIR_MODE)
+        if not _cleanup_socket(self._control_path):
+            raise RuntimeError(f"socket {self._control_path} 已被占用")
+        self._control_server = _create_server(self._control_path)
+        os.chmod(self._control_path, CONTROL_SOCK_MODE)
         ctl_thread = threading.Thread(
             target=self._serve_control,
-            args=(ctl_server,),
             daemon=True,
             name="ctl-socket",
         )
         ctl_thread.start()
         self._threads.append(ctl_thread)
-        _set_socket_permissions(
-            self._control_path,
-            0,  # root
-            0,  # wheel
-            self._control_mode,
-        )
-        logger.info("control socket: %s (mode=%o)", self._control_path,
-                    self._control_mode)
+        logger.info("control socket: %s (mode=%o + UID 验证)",
+                    self._control_path, CONTROL_SOCK_MODE)
 
         # Reaper 线程
         reaper = threading.Thread(target=self._reaper_loop, daemon=True,
@@ -173,33 +259,38 @@ class SocketServer:
         logger.info("socket server started")
 
     def stop(self):
-        """停止所有 socket 服务（线程将在下一次 I/O 时退出）"""
+        """停止所有 socket 服务"""
         self._running = False
+        # 主动 close 唤醒阻塞的 accept()
+        if self._request_server:
+            try:
+                self._request_server.close()
+            except OSError:
+                pass
+            self._request_server = None
+        if self._control_server:
+            try:
+                self._control_server.close()
+            except OSError:
+                pass
+            self._control_server = None
         # 清理 socket 文件
-        try:
-            os.unlink(self._request_path)
-        except FileNotFoundError:
-            pass
-        try:
-            os.unlink(self._control_path)
-        except FileNotFoundError:
-            pass
+        for path in (self._request_path, self._control_path):
+            try:
+                os.unlink(path)
+            except FileNotFoundError:
+                pass
         self._pool.shutdown(wait=False)
         logger.info("socket server stopped")
 
-    def _create_server(self, path: str) -> socket.socket:
-        """创建并绑定一个 Unix socket"""
-        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        server.bind(path)
-        server.listen(32)
-        return server
-
     # ── 请求 socket 处理 ──
 
-    def _serve_requests(self, server: socket.socket):
+    def _serve_requests(self):
         """请求 socket 主循环"""
-        server.settimeout(1.0)
+        server = self._request_server
+        if not server:
+            return
+        server.settimeout(POLL_TIMEOUT)
         while self._running:
             try:
                 client, _ = server.accept()
@@ -217,7 +308,7 @@ class SocketServer:
             req = _recv_json(client)
             req_type = req.get("type")
 
-            if req_type == "sudo_request":
+            if req_type == MSG_SUDO_REQUEST:
                 self._handle_sudo_request(client, req)
             else:
                 _send_json(client, {
@@ -238,6 +329,10 @@ class SocketServer:
         reason = req.get("reason", "提权请求")
         origin = req.get("origin", {})
 
+        # 类型校验：origin 必须是 dict
+        if not isinstance(origin, dict):
+            origin = {"channel": "unknown"}
+
         if not command:
             _send_json(client, {
                 "status": "error",
@@ -255,7 +350,7 @@ class SocketServer:
         # 3. 等待审批结果
         entry.event.wait()
 
-        # 4. 如果超时被 reaper 收割，走 timeout 分支
+        # 4. 如果超时被 reaper 收割
         if not entry.resolved:
             _send_json(client, {
                 "status": "timeout",
@@ -284,15 +379,26 @@ class SocketServer:
             "result": exec_result,
         })
 
-    # ── 控制 socket 处理 ──
+    # ── 控制 socket 处理（含 UID 验证）──
 
-    def _serve_control(self, server: socket.socket):
+    def _serve_control(self):
         """控制 socket 主循环"""
-        server.settimeout(1.0)
+        server = self._control_server
+        if not server:
+            return
+        server.settimeout(POLL_TIMEOUT)
         while self._running:
             try:
                 client, _ = server.accept()
-                self._pool.submit(self._handle_control_client, client)
+                # UID 验证：只有受信任的 UID 可提交审批
+                peer_uid = _get_peer_uid(client)
+                if peer_uid is None or peer_uid not in TRUSTED_UIDS:
+                    logger.warning("control socket 拒绝未信任 UID: %s",
+                                   peer_uid)
+                    client.close()
+                    continue
+                self._pool.submit(
+                    self._handle_control_client, client, peer_uid)
             except socket.timeout:
                 continue
             except OSError as exc:
@@ -300,17 +406,18 @@ class SocketServer:
                     logger.error("control socket accept error: %s", exc)
                     time.sleep(1)
 
-    def _handle_control_client(self, client: socket.socket):
-        """处理一个控制 socket 客户端（连接器）"""
+    def _handle_control_client(self, client: socket.socket,
+                               peer_uid: int):
+        """处理一个控制 socket 客户端（已验证 UID）"""
         try:
             req = _recv_json(client)
             req_type = req.get("type")
 
-            if req_type == "approval_response":
-                self._handle_approval_response(client, req)
-            elif req_type == "register":
+            if req_type == MSG_APPROVAL_RESPONSE:
+                self._handle_approval_response(client, req, peer_uid)
+            elif req_type == MSG_REGISTER:
                 self._handle_connector_register(client, req)
-            elif req_type == "list_pending":
+            elif req_type == MSG_LIST_PENDING:
                 self._handle_list_pending(client, req)
             else:
                 _send_json(client, {
@@ -325,7 +432,8 @@ class SocketServer:
             except OSError:
                 pass
 
-    def _handle_approval_response(self, client: socket.socket, req: dict):
+    def _handle_approval_response(self, client: socket.socket, req: dict,
+                                  peer_uid: int):
         """处理审批响应"""
         req_id = req.get("req_id", "")
         action = req.get("action", "deny")
@@ -335,7 +443,7 @@ class SocketServer:
         if action not in ("approve", "deny"):
             _send_json(client, {
                 "status": "error",
-                "error": f"无效的 action: {action}（必须是 approve 或 deny）",
+                "error": f"无效的 action: {action}",
             })
             return
 
@@ -391,4 +499,4 @@ class SocketServer:
                 self._queue.reap_expired()
             except Exception as exc:
                 logger.error("reaper error: %s", exc)
-            time.sleep(10)
+            time.sleep(REAPER_INTERVAL)

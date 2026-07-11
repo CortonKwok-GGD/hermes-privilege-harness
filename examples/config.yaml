@@ -6,6 +6,7 @@ daemon:
   gid: 0                # 运行组
   log_level: info       # debug | info | warn | error
   audit_log: /var/log/hermes-vip/audit.log
+  trusted_user: ""      # 允许通过 control socket 批准请求的用户（留空自动识别 SUDO_USER）
 
 sockets:
   request: /var/run/hermes-vip/request.sock

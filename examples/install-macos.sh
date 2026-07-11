@@ -67,9 +67,9 @@ fi
 # ── Step 3: socket 和日志目录 ──
 echo "🔌 创建运行时目录..."
 mkdir -p "$VIP_RUN"
-chmod 755 "$VIP_RUN"
-chown root:daemon "$VIP_RUN"
-echo "  ✅ $VIP_RUN (root:daemon 755)"
+chmod 700 "$VIP_RUN"
+chown root:wheel "$VIP_RUN"
+echo "  ✅ $VIP_RUN (root:wheel 700)"
 
 mkdir -p "$VIP_LOG"
 chmod 755 "$VIP_LOG"
