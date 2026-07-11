@@ -44,31 +44,7 @@ echo "  ✅ root 用户存在"
 
 # 0c. 检查 Hermes 用户权限
 echo "  🔍 $REAL_USER 的 sudo 权限:"
-if sudo -l -U "$REAL_USER" 2>/dev/null | grep -q "NOPASSWD: ALL"; then
-  echo "    NOPASSWD: ALL（权限过大）"
-  echo "    建议降级 $REAL_USER 的 sudo 权限以增强安全性。"
-  read -p "是否自动降级（移除 NOPASSWD）？[y/N] " downgrade
-  case "$downgrade" in
-    [yY]*)
-      # 查找并清理 NOPASSWD 条目（处理只读文件）
-      SUDOERS_FILES=$(sudo grep -rl "$REAL_USER.*NOPASSWD" /etc/sudoers.d/ 2>/dev/null || true)
-      for f in $SUDOERS_FILES; do
-        sudo chmod 640 "$f" 2>/dev/null || true
-        sudo sed -i "/$REAL_USER.*NOPASSWD.*ALL/d" "$f"
-        sudo chmod 440 "$f" 2>/dev/null || true
-        echo "    已清理: $f"
-      done
-      sudo sed -i "/$REAL_USER.*NOPASSWD.*ALL/d" /etc/sudoers 2>/dev/null || true
-      echo "  ✅ 已降级"
-      echo "  注意：降级后 sudo 需要密码，请勿忘记。";;
-    *)
-      echo "  ⏭ 保留当前权限（LLM 可能绕过 VIP）";;
-  esac
-elif sudo -l -U "$REAL_USER" 2>/dev/null | grep -q "ALL"; then
-  echo "    ✅ 需要密码（正常）"
-else
-  echo "    ✅ 无特殊权限"
-fi
+
 echo ""
 echo "✅ 用户: $REAL_USER"
 echo "✅ Hermes: $($HERMES_BIN --version 2>&1 | head -1)"
