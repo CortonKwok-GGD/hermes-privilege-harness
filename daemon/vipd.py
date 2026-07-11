@@ -86,10 +86,6 @@ def main():
                         help="日志文件路径")
     args = parser.parse_args()
 
-    # 检查 root
-    if os.geteuid() != 0:
-        print("错误：VIP Daemon 必须以 root 身份运行", file=sys.stderr)
-        sys.exit(1)
 
     # 配置
     config = load_config(args.config)
