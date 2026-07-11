@@ -83,7 +83,8 @@ cfg.setdefault('plugins', {}).setdefault('enabled', [])
 if 'hermes-vip' not in cfg['plugins']['enabled']:
   cfg['plugins']['enabled'].append('hermes-vip')
 with open(path, 'w') as f: yaml.dump(cfg, f, default_flow_style=False)
-print('  ✅ Plugin 已启用')
+print('  ✅ Plugin 已启用
+')
 "
 echo ""
 
