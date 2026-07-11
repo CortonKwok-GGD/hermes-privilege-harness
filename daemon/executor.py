@@ -21,15 +21,7 @@ from typing import Optional
 logger = logging.getLogger("vipd.executor")
 
 # 高危模式（同 Hermes approvals 的检测逻辑）
-DANGEROUS_PATTERNS = [
-    r"\bcurl\b.*\|\s*(bash|sh|zsh|ksh)",
-    r"\bwget\b.*\|\s*(bash|sh|zsh|ksh)",
-    r"\|.*\b(base64|xxd|hexdump).*\||\|.*\bsh\b",
-    r"chmod\s+777\s+",
-    r"rm\s+-rf\s+/\s*$",
-    r">\s*/dev/sda",
-    r"dd\s+if=.*of=/dev/sda",
-]
+from .dangerous import check as _danger_check
 
 
 class Executor:
@@ -42,13 +34,12 @@ class Executor:
         self._detect_dangerous = detect_dangerous
 
     def check_dangerous(self, command: str) -> Optional[str]:
-        """检测高危命令模式。返回匹配的模式描述，或 None"""
         if not self._detect_dangerous:
             return None
-        import re
-        for pattern in DANGEROUS_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                return f"高危模式匹配：{pattern}"
+        from .dangerous import check as dc
+        hits = dc(command)
+        if hits:
+            return f"high_risk: {', '.join(hits)}"
         return None
 
     def execute(self, command: str, timeout: Optional[int] = None,
