@@ -5,35 +5,49 @@ Gateway Handler — 网关命令处理器
 处理用户通过网关发送的 /vip-approve /vip-deny /vip-pending 命令。
 命令绕过 LLM，直接通过 control socket 发送到 VIP daemon。
 
-Hermes 网关已有类似的 bypass 机制（/approve /deny 绕过 LLM），
-这里复用同样的架构。
+Hermes 网关已有相同的 bypass 机制（/approve /deny 绕过 LLM），
+/vip-* 命令同样由网关直接路由，不走 LLM。
+
+Handler 签名（register_command 要求）:
+    fn(raw_args: str) -> str | None
 """
 
 import json
 import logging
 import os
 import shlex
-
-from .connectors.hermes_gateway import send_response as _send_to_vip
+import socket
+import struct
+import time
 
 logger = logging.getLogger("hermes-vip.gateway_handler")
 
+CONTROL_SOCK = os.environ.get(
+    "VIP_CONTROL_SOCK", "/var/run/hermes-vip/control.sock")
 
-def handle_approve(args: str, context: dict) -> str:
+
+def handle_approve(args: str) -> str:
     """
     处理 /vip-approve <req_id>
-
-    命令绕过 LLM，由 Hermes 网关直接路由到这里。
-    将批准信息发送到 VIP daemon 的 control socket。
+    绕过 LLM，直接发批准到 VIP control socket
     """
     tokens = shlex.split(args) if args else []
     if not tokens:
-        return "用法: /vip-approve <req_id>\n查看待审: /vip-pending"
+        return (
+            "用法: /vip-approve <req_id>\n"
+            "查看待审批: /vip-pending"
+        )
 
     req_id = tokens[0]
-    verified_by = _get_verified_by(context)
 
-    result = _send_to_vip(req_id, "approve", verified_by)
+    result = _send_to_control_socket({
+        "type": "approval_response",
+        "req_id": req_id,
+        "action": "approve",
+        "connector": "hermes_gateway",
+        "verified_by": "gateway_user",
+        "timestamp": time.time(),
+    })
 
     if result.get("status") == "ok":
         return f"✅ 已批准请求 {req_id}"
@@ -41,18 +55,28 @@ def handle_approve(args: str, context: dict) -> str:
         return f"❌ 批准失败: {result.get('error', '请求不存在或已处理')}"
 
 
-def handle_deny(args: str, context: dict) -> str:
+def handle_deny(args: str) -> str:
     """
     处理 /vip-deny <req_id>
+    绕过 LLM，直接发拒绝到 VIP control socket
     """
     tokens = shlex.split(args) if args else []
     if not tokens:
-        return "用法: /vip-deny <req_id>\n查看待审: /vip-pending"
+        return (
+            "用法: /vip-deny <req_id>\n"
+            "查看待审批: /vip-pending"
+        )
 
     req_id = tokens[0]
-    verified_by = _get_verified_by(context)
 
-    result = _send_to_vip(req_id, "deny", verified_by)
+    result = _send_to_control_socket({
+        "type": "approval_response",
+        "req_id": req_id,
+        "action": "deny",
+        "connector": "hermes_gateway",
+        "verified_by": "gateway_user",
+        "timestamp": time.time(),
+    })
 
     if result.get("status") == "ok":
         return f"❌ 已拒绝请求 {req_id}"
@@ -60,12 +84,13 @@ def handle_deny(args: str, context: dict) -> str:
         return f"⚠️ 拒绝失败: {result.get('error', '请求不存在或已处理')}"
 
 
-def handle_pending(args: str, context: dict) -> str:
+def handle_pending(_args: str = "") -> str:
     """
     处理 /vip-pending — 列出所有待审批的提权请求
+    通过 control socket 从 VIP daemon 拉取
     """
     try:
-        pending = _list_pending_from_vip()
+        pending = _list_pending()
     except Exception as exc:
         return f"无法获取待审列表: {exc}"
 
@@ -77,15 +102,13 @@ def handle_pending(args: str, context: dict) -> str:
         req_id = item.get("req_id", "???")
         command = item.get("command", "")[:50]
         reason = item.get("reason", "")[:40]
-        created = item.get("created_at", 0)
-        expires = item.get("expires_at", 0)
-        remaining = int(expires - __import__("time").time()) if expires else 0
+        remaining = int(item.get("expires_at", 0) - time.time()) if item.get("expires_at") else 0
 
         lines.append(f"  #{req_id}")
         lines.append(f"    命令: {command}")
         if reason:
             lines.append(f"    原因: {reason}")
-        lines.append(f"    剩余: {remaining}s")
+        lines.append(f"    剩余: {remaining}s" if remaining > 0 else "    过期: 即将超时")
         lines.append(f"    /vip-approve {req_id}  — 批准")
         lines.append(f"    /vip-deny {req_id}     — 拒绝")
         lines.append("")
@@ -93,36 +116,36 @@ def handle_pending(args: str, context: dict) -> str:
     return "\n".join(lines)
 
 
-def _get_verified_by(context: dict) -> str:
-    """从上下文提取用户标识"""
-    platform = context.get("platform", "unknown")
-    user_id = context.get("user_id", "")
-    return f"{platform}:{user_id}" if user_id else platform
+# ── 内部方法 ──
 
 
-def _list_pending_from_vip() -> list[dict]:
-    """通过 control socket 查询待审列表"""
-    import socket
-    import struct
+def _send_to_control_socket(payload: dict) -> dict:
+    """通过 control socket 发送消息到 VIP daemon"""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(5)
+        sock.connect(CONTROL_SOCK)
 
-    control_sock = os.environ.get(
-        "VIP_CONTROL_SOCK", "/var/run/hermes-vip/control.sock")
+        data = json.dumps(payload).encode("utf-8")
+        sock.sendall(struct.pack("!I", len(data)) + data)
 
-    sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    sock.settimeout(5)
-    sock.connect(control_sock)
-
-    payload = {"type": "list_pending"}
-    data = json.dumps(payload).encode("utf-8")
-    sock.sendall(struct.pack("!I", len(data)) + data)
-
-    raw_len = sock.recv(4, socket.MSG_WAITALL)
-    if not raw_len:
+        raw_len = sock.recv(4, socket.MSG_WAITALL)
+        if not raw_len:
+            sock.close()
+            return {"status": "error", "error": "VIP daemon 无响应"}
+        msg_len = struct.unpack("!I", raw_len)[0]
+        resp_data = sock.recv(msg_len, socket.MSG_WAITALL)
         sock.close()
-        return []
-    msg_len = struct.unpack("!I", raw_len)[0]
-    resp_data = sock.recv(msg_len, socket.MSG_WAITALL)
-    sock.close()
+        return json.loads(resp_data.decode("utf-8"))
 
-    result = json.loads(resp_data.decode("utf-8"))
+    except (socket.error, ConnectionRefusedError, FileNotFoundError) as exc:
+        logger.error("control socket 连接失败: %s", exc)
+        return {"status": "error", "error": str(exc)}
+
+
+def _list_pending() -> list[dict]:
+    """从 VIP daemon 获取待审批列表"""
+    result = _send_to_control_socket({
+        "type": "list_pending",
+    })
     return result.get("pending", [])
