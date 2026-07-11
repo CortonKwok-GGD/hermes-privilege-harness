@@ -1,18 +1,10 @@
 """
-Intercept — sudo 命令拦截层
-
-运行在 Hermes 进程内。拦截所有 terminal("sudo ...") 命令，
-转给 VIP daemon。
-
-通知逻辑：
-1. 先尝试桌面通知（notify-send / osascript）
-2. 如果失败，自动返回引导消息，让用户在对话中输入 /vip-pending
+Intercept — terminal 命令先走 bwrap 沙箱，失败才走 VIP
 """
 
 import json
 import logging
 import os
-import platform
 import re
 import socket
 import struct
@@ -21,104 +13,105 @@ import time
 
 logger = logging.getLogger("hermes-vip.intercept")
 
-REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
-SUDO_RE = re.compile(r"^\s*sudo\s")
+REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/run/hermes-vip/request.sock")
 KILL_FILE = "/etc/hermes-vip/kill_sudo"
+SUDO_RE = re.compile(r"^\s*sudo\s")
+BWRAP = "/usr/local/bin/hermes-bwrap-exec"
 
 
-def _notify_desktop(title: str, message: str) -> bool:
-    """发送桌面通知，返回是否成功"""
-    system = platform.system()
-    try:
-        if system == "Linux":
-            # 尝试通过当前用户发送通知
+def handle_terminal(command: str, reason: str = "") -> dict:
+    """
+    处理 terminal 命令：先试 bwrap，失败走 VIP。
+    
+    Returns: {"action": "return_immediately", "result": str}
+    """
+    is_sudo = bool(SUDO_RE.match(command))
+
+    # 非 sudo 命令先试 bwrap
+    if not is_sudo and os.path.exists(BWRAP):
+        try:
             result = subprocess.run(
-                ["notify-send", title, message, "-i", "dialog-password"],
-                timeout=3, capture_output=True,
+                [BWRAP, "/bin/bash", "-c", command],
+                capture_output=True, text=True, timeout=30,
             )
             if result.returncode == 0:
-                return True
-            # 失败：可能没有 DISPLAY
-            logger.warning("notify-send 失败: %s", result.stderr.decode()[:100])
-            return False
-        elif system == "Darwin":
-            script = f'display notification "{message}" with title "{title}"'
-            subprocess.run(
-                ["osascript", "-e", script],
-                timeout=3, capture_output=True,
-            )
-            return True
-    except Exception as exc:
-        logger.warning("桌面通知失败: %s", exc)
-    return False
+                return {"action": "return_immediately", "result": result.stdout}
+            # bwrap 失败了（可能没权限），fallthrough 到 VIP
+        except Exception:
+            pass
+
+    # sudo 或 bwrap 失败 → 走 VIP
+    if is_sudo or os.path.exists(BWRAP):
+        return _vip_flow(command, reason or "提权请求")
+
+    # 没有 bwrap，直接放行
+    return None
 
 
-def _send_to_vip(command: str, reason: str) -> dict:
-    """向 VIP daemon 提交提权请求，返回响应"""
+def _vip_flow(command: str, reason: str) -> dict:
+    """提交 VIP daemon 并等待审批"""
+    # Kill 文件检查
+    if os.path.exists(KILL_FILE):
+        return {"action": "return_immediately",
+                "result": "sudo: command not found"}
+
+    # 连接 VIP daemon
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(10)
     try:
         sock.connect(REQUEST_SOCK)
     except (FileNotFoundError, ConnectionRefusedError) as exc:
         logger.warning("VIP daemon 未运行: %s", exc)
-        sock.close()
-        return {"error": f"VIP daemon 未运行: {exc}"}
+        return {"action": "return_immediately",
+                "result": "需要管理员权限，请在对话中输入 /vip-pending"}
 
+    # 提交请求
     req = {
         "type": "sudo_request",
         "command": command,
         "reason": reason,
         "origin": {"channel": "cli", "timestamp": time.time()},
     }
-    payload = json.dumps(req).encode("utf-8")
+    payload = json.dumps(req).encode()
     sock.sendall(struct.pack("!I", len(payload)) + payload)
 
-    # 等回应（含 req_id）
+    # 收 pending 响应（立即返回）
     raw_len = sock.recv(4, socket.MSG_WAITALL)
     if raw_len:
-        msg_len = struct.unpack("!I", raw_len)[0]
-        resp = json.loads(sock.recv(msg_len, socket.MSG_WAITALL))
-        sock.close()
-        return resp
+        resp = json.loads(sock.recv(struct.unpack("!I", raw_len)[0], socket.MSG_WAITALL))
+        req_id = resp.get("req_id", "")
+        if req_id:
+            # 桌面通知
+            _notify(f"🔐 提权请求", f"命令: {command[:50]}")
+
+            # 等审批结果
+            raw_len = sock.recv(4, socket.MSG_WAITALL)
+            if raw_len:
+                result = json.loads(sock.recv(struct.unpack("!I", raw_len)[0], socket.MSG_WAITALL))
+                sock.close()
+                if result.get("status") == "approved":
+                    exec_r = result.get("result", {})
+                    return {"action": "return_immediately",
+                            "result": exec_r.get("stdout", "")}
+                return {"action": "return_immediately",
+                        "result": "命令被拒绝"}
+            
+            return {"action": "return_immediately",
+                    "result": "审批超时，请输入 /vip-pending 查看"}
 
     sock.close()
-    return {"error": "无响应"}
+    return {"action": "return_immediately",
+            "result": "需要管理员权限，请输入 /vip-pending"}
 
 
-def handle_vip_sudo(command: str, reason: str = "提权请求") -> str:
-    """处理 sudo 命令——提交 VIP daemon 并返回伪装错误"""
+def _notify(title: str, msg: str):
+    """发送桌面通知"""
+    try:
+        subprocess.run(["notify-send", title, msg, "-i", "dialog-password"],
+                       timeout=3, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
 
-    # 1. Kill 文件检查
-    if os.path.exists(KILL_FILE):
-        logger.info("kill file 存在，拒绝 sudo 请求")
-        return "sudo: command not found"
 
-    # 2. 提交 VIP daemon
-    resp = _send_to_vip(command, reason)
-    req_id = resp.get("req_id", "")
-
-    if resp.get("error"):
-        # daemon 不可用，返回标准 sudo 错误
-        logger.warning("VIP daemon 不可用，fallback 到 sudo 错误")
-        return "sudo: a password is required"
-
-    if req_id:
-        # 3. 尝试桌面通知
-        title = f"🔐 提权请求"
-        msg = f"命令: {command[:50]}...\n对话输入: /vip-approve {req_id[:8]}"
-        notified = _notify_desktop(title, msg)
-
-        if notified:
-            logger.info("桌面通知已发送")
-        else:
-            # 通知失败，自动返回引导消息
-            logger.info("桌面通知失败，返回引导消息")
-            return (
-                f"需要管理员权限才能执行此命令。\n"
-                f"请在对话中输入: /vip-pending 查看待审批请求"
-            )
-
-        # 返回伪装错误（有通知时）
-        return "sudo: a password is required"
-
-    return "sudo: a password is required"
+# 保留旧接口兼容
+handle_vip_sudo = lambda cmd, reason="": _vip_flow(cmd, reason)
