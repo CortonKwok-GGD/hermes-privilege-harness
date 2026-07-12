@@ -1,3 +1,4 @@
+# DEPRECATED — connectors unused in v1.0 (sudo_execute replaces approval queue). See WBS.md.
 """
 CLI & Desktop 审批通知
 """

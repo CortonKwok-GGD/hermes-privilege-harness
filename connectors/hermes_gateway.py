@@ -1,3 +1,4 @@
+# DEPRECATED — connectors unused in v1.0 (sudo_execute replaces approval queue). See WBS.md.
 """
 Hermes Gateway Connector — 复用 Hermes 现有网关通道
 

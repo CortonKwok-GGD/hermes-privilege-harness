@@ -133,3 +133,13 @@
 | 请求 socket user:staff | Hermes 能提交请求但不能批准 |
 | 审批必须匹配 req_id | 无法批准不存在的请求 |
 | 审计日志不可变 | append-only 日志，记录每个操作 |
+
+---
+
+## ⚠️ DEPRECATED — v1.0 起已停用
+
+本文描述的审批队列模式（`MSG_SUDO_REQUEST` → 入队列 → 连接器审批 → 返回结果）已在 v1.0 被 `sudo_execute` 直通模式替代。
+
+**当前架构**：`MSG_SUDO_EXECUTE` → 直接执行 → 返回结果。详见 `WBS.md`。
+
+本文保留仅供历史参考。
