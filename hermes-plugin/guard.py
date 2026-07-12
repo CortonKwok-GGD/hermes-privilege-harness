@@ -3,16 +3,10 @@ VIP Guard — passive privilege harness.
 
 Philosophy:
   - Hermes handles: dangerous command detection, approval cards, blocking sudo
-  - VIP handles: execution via daemon (only after Hermes has approved)
+  - VIP handles: execution via daemon (only after proven approval)
 
-This guard does ONE thing:
-  1. vip_sudo → returns {"action":"approve"} → triggers Hermes native card
-  2. After approval → handler submits to daemon → returns result
-
-It does NOT:
-  - Block terminal sudo (Hermes' job)
-  - Track session state (Hermes' job)
-  - Detect loops (Hermes' job)
+Security: vip_sudo handler refuses any command it hasn't stamped in check().
+          A command must pass through the approval gate before it executes.
 """
 
 import json
@@ -26,13 +20,42 @@ logger = logging.getLogger("hermes-vip.guard")
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
 
+# ── Defense-in-depth: commands must be stamped by check() before execution ──
+# check() stores a stamp → handler verifies it → handler clears it.
+# A direct call to vip_sudo (bypassing the approval card) will be rejected.
+_STAMP_TTL = 30  # seconds — generous: handler runs immediately after approval
+_stamps: dict[str, float] = {}
 
-# ── pre_tool_call entry ──
+
+def _stamp(command: str):
+    """Mark a command as having passed through the approval gate."""
+    key = command[:120]  # use prefix as key (rejects command-truncation attacks)
+    _stamps[key] = time.time()
+    # Clean expired stamps
+    now = time.time()
+    for k in list(_stamps):
+        if now - _stamps[k] > _STAMP_TTL * 2:
+            del _stamps[k]
+
+
+def _verify(command: str) -> bool:
+    """Verify the command was stamped by check(). Returns True and clears stamp."""
+    key = command[:120]
+    ts = _stamps.pop(key, None)
+    if ts is None:
+        return False
+    if time.time() - ts > _STAMP_TTL:
+        return False
+    return True
+
+
+# ── pre_tool_call ──
 
 def check(tool_name: str, args: dict):
-    """Only intercept vip_sudo. Everything else passes through."""
+    """Stamp vip_sudo commands before Hermes shows the approval card."""
     if tool_name == "vip_sudo":
         command = args.get("command", "") if isinstance(args, dict) else ""
+        _stamp(command)
         return {
             "action": "approve",
             "message": f"Execute with root: {command[:80]}",
@@ -40,12 +63,21 @@ def check(tool_name: str, args: dict):
     return None
 
 
-# ── vip_sudo handler (runs AFTER Hermes approval card) ──
+# ── vip_sudo handler ──
 
 def vip_sudo(command: str, reason: str = "") -> str:
-    """Execute via daemon. Called only after Hermes native card approval."""
+    """
+    Execute via daemon. REFUSES to execute unless check() stamped this command first.
+    Called only after Hermes native card approval.
+    """
     if not command:
         return json.dumps({"error": "command required", "exit_code": -1})
+
+    if not _verify(command):
+        return json.dumps({
+            "error": "REJECTED: command was not approved through the privilege gate",
+            "exit_code": -1,
+        })
 
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)
@@ -70,7 +102,6 @@ def vip_sudo(command: str, reason: str = "") -> str:
         sock.close()
         return json.dumps({"error": f"submit failed: {exc}", "exit_code": -1})
 
-    # Receive result directly (sudo_execute skips approval queue)
     try:
         raw = _recv_all(sock, 4)
         if not raw or len(raw) < 4:
