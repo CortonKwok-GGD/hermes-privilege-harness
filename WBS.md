@@ -1,311 +1,193 @@
-# Hermes VIP — Work Breakdown Structure
+# Hermes Privilege Harness — WBS
 
-> 项目工作分解。每个任务记录状态、产出、代码位置。
-> 更新规则：完成任务后更新状态 + 写入产出摘要，不清除历史。
+> 项目工作分解 + 踩坑记录。完成任务后更新状态，不清除历史。
 
 ---
 
 ## 项目概况
 
 ```
-名称：    Hermes VIP (Verified Interface Process)
-目标：    Hermes 的 root 提权闸门——一条明确的路：vip_sudo
-仓库：    ~/hermes-workspace/apps/hermes-vip/
-发布：    沙箱测试通过 (10.0.0.3)
-平台：    Linux (systemd) / macOS (launchd)
-架构：    方向 C（2026-07-11）— 简化版
-状态：    ✅ 沙箱验证通过
+名称：    Hermes Privilege Harness (hermes-privilege-harness)
+简称：    VIP (Verified Interface Process)
+目标：    LLM 只有一个提权通道：vip_sudo → 原生审批卡片 → 用户批准 → root
+仓库：    https://github.com/CortonKwok-GGD/hermes-privilege-harness
+         https://gitee.com/cortonkwok/hermes-privilege-harness
+平台：    macOS (Login Items + watchdog) / Linux (systemd)
+版本：    v1.0.0
+状态：    ✅ 沙箱验证通过 / ✅ 本地 Mac 验证通过 / 🟡 待社区 PR
 ```
 
-## 架构变更记录（方向 C 重构）
+## 架构演进
 
-| 日期 | 变更 | 删除 | 新增/修改 |
-|------|------|------|-----------|
-| 2026-07-11 | **方向 C 简化** | `dangerous.py/dangerous_patterns.json` / `bwrap/` / `_fix_root_check.py` | `intercept.py` 重写（sudo 守卫 + 阻塞 handler） / `__init__.py` 简化 / `executor.py` 简化 / `test_flow.py` 流程测试 |
-
-### 核心变更
-
-1. **删除了 intercept/fake error/bwrap 三层混杂** → 改为明确的 sudo 守卫
-2. **修复了结果回不来** → plugin 保持 socket 连接，阻塞读最终结果
-3. **删除了 dangerous.py 模式检测** → VIP 是显式提权，不需要拦截检测
-4. **删除了所有 bwrap 引用** → 与 Electron 不兼容，简化架构
-5. **沙箱验证通过**（10.0.0.3）：approval_queue/executor/audit 4 组测试 + 完整 socket 流程测试
-
----
-
-## Phase 0：项目骨架
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 0.1 | 创建目录结构 | ✅ 完成 | 6 个子目录 | `apps/hermes-vip/` |
-| 0.2 | 创建 WBS | ✅ 完成 | 本文档 | `WBS.md` |
-| 0.3 | 创建核心模块占位 | 🔴 待开始 | Python 包骨架 | `daemon/`, `hermes-plugin/` |
-
----
-
-## Phase 1：VIP Daemon 核心
-
-### 1.1 Socket 通信协议
-
-设计 VIP daemon 与 Hermes plugin 之间的通信协议。
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 1.1.1 | 定义请求/响应格式 | 🔴 待开始 | 协议文档 | `docs/PROTOCOL.md` |
-| 1.1.2 | 定义 socket 路径规划 | 🔴 待开始 | 路径设计 | `daemon/socket_server.py` |
-
-**协议草案：**
-
-```json
-// 请求 socket（user 可读）— Hermes Plugin → VIP Daemon
-// Unix socket: /var/run/hermes-vip/request.sock (user:staff 755)
-
-{
-  "type": "sudo_request",
-  "req_id": "a7f2c3d8",
-  "command": "brew install node@18",
-  "reason": "用户要求安装 Node.js 18",
-  "origin": {
-    "channel": "weixin",
-    "session_key": "wx_abc123"
-  },
-  "timestamp": 1700000000
-}
-
-// → 返回（同步，会阻塞直到审批完成或超时）
-{
-  "status": "approved" | "denied" | "timeout",
-  "stdout": "...",
-  "stderr": "...",
-  "exit_code": 0
-}
-```
-
-```json
-// 控制 socket（root:600）— 连接器 → VIP Daemon
-// Unix socket: /var/run/hermes-vip/control.sock (root:wheel 600)
-
-{
-  "type": "approval_response",
-  "req_id": "a7f2c3d8",
-  "action": "approve" | "deny",
-  "connector": "hermes_gateway" | "telegram" | "cli",
-  "verified_by": "user_id:telegram_12345",
-  "timestamp": 1700000100
-}
-```
-
-### 1.2 审批队列
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 1.2.1 | 实现 ApprovalQueue 类 | 🔴 待开始 | TTL + 线程安全队列 | `daemon/approval_queue.py` |
-| 1.2.2 | 实现 req_id 生成器 | 🔴 待开始 | 8 位随机 hex + 纳秒 | 同上 |
-| 1.2.3 | 实现超时自动拒绝 | 🔴 待开始 | 5 分钟 TTL 兜底 | 同上 |
-| 1.2.4 | 实现 pending 表持久化 | 🔴 待开始 | JSON 文件兜底（防重启丢失）| `daemon/approval_queue.py` |
-
-### 1.3 命令执行器
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 1.3.1 | 实现 Executor 类 | 🔴 待开始 | subprocess 封装 | `daemon/executor.py` |
-| 1.3.2 | stdout/stderr 捕获 | 🔴 待开始 | 带大小限制 | 同上 |
-| 1.3.3 | 超时自动 kill | 🔴 待开始 | 可配超时（默认 300s）| 同上 |
-| 1.3.4 | 高危命令检测 | 🔴 待开始 | 管道+shell 检测（同 Hermes approvals）| 同上 |
-
-### 1.4 Socket 服务器
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 1.4.1 | 实现请求 socket 服务 | 🔴 待开始 | Unix socket 监听 | `daemon/socket_server.py` |
-| 1.4.2 | 实现控制 socket 服务 | 🔴 待开始 | root 独占 socket | 同上 |
-| 1.4.3 | 实现请求→队列→等待→返回流程 | 🔴 待开始 | 完整 handler | 同上 |
-| 1.4.4 | 多客户端并发支持 | 🔴 待开始 | 线程池 | 同上 |
-
-### 1.5 连接器枢纽
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 1.5.1 | 定义 Connector 基类 | 🔴 待开始 | 接口规范 | `connectors/__init__.py` |
-| 1.5.2 | 实现 hermes_gateway 连接器 | 🔴 待开始 | 通过 control socket 通知 | `connectors/hermes_gateway.py` |
-| 1.5.3 | 实现 CLI 连接器 | 🔴 待开始 | 终端交互 | `connectors/cli.py` |
-| 1.5.4 | 实现 OS dialog 连接器 | 🔴 待开始 | macOS osascript / Linux notify | `connectors/os_dialog.py` |
-
-### 1.6 VIP Daemon 主入口
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 1.6.1 | 实现 vipd.py 主循环 | 🔴 待开始 | 启动→初始化→监听 | `daemon/vipd.py` |
-| 1.6.2 | 配置文件加载 | 🔴 待开始 | YAML 配置 | 同上 |
-| 1.6.3 | 日志系统 | 🔴 待开始 | 结构化日志 | 同上 |
-| 1.6.4 | 审计日志 | 🔴 待开始 | 不可变操作记录 | 同上 |
-
----
-
-## Phase 2：Hermes Plugin
-
-### 2.1 插件骨架
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 2.1.1 | 创建 plugin.yaml | 🔴 待开始 | 插件清单 | `hermes-plugin/plugin.yaml` |
-| 2.1.2 | 创建 \_\_init\_\_.py | 🔴 待开始 | register(ctx) 入口 | `hermes-plugin/__init__.py` |
-| 2.1.3 | 实现 register() 函数 | 🔴 待开始 | 注册 vip_sudo 工具 | 同上 |
-
-### 2.2 sudo 拦截层
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 2.2.1 | 拦截 terminal("sudo ...") 命令 | 🔴 待开始 | 命令前缀匹配 | `hermes-plugin/intercept.py` |
-| 2.2.2 | 提交 VIP 并伪造 sudo 错误 | 🔴 待开始 | 返回"sudo: a password is required" | 同上 |
-| 2.2.3 | 重试时检测 pending 结果 | 🔴 待开始 | pending 表查重 | 同上 |
-| 2.2.4 | 自动感知用户当前界面 | 🔴 待开始 | gateway/cli/desktop 检测 | 同上 |
-
-### 2.3 审批命令处理器
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 2.3.1 | 注册 /vip-pending 命令 | 🔴 待开始 | 查待审列表 | `hermes-plugin/gateway_handler.py` |
-| 2.3.2 | 注册 /vip-approve <id> 命令 | 🔴 待开始 | 批准指定请求 | 同上 |
-| 2.3.3 | 注册 /vip-deny <id> 命令 | 🔴 待开始 | 拒绝指定请求 | 同上 |
-| 2.3.4 | 通过 Hermes 现有审批绕过机制 | 🔴 待开始 | 利用现有 /approve 绕过路径 | 同上 |
-
-### 2.4 Kill 文件机制
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 2.4.1 | 实现 kill_sudo 标记检测 | 🔴 待开始 | 文件存在→返回"sudo: not found" | `hermes-plugin/kill.py` |
-| 2.4.2 | 安装脚本创建 kill 文件 | 🔴 待开始 | `/etc/hermes-vip/kill_sudo` | `examples/` |
-
----
-
-## Phase 3：安装部署
-
-### 3.1 macOS launchd
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 3.1.1 | 编写 launchd plist 模板 | 🔴 待开始 | 启动 vipd | `examples/com.hermes.vipd.plist` |
-| 3.1.2 | 安装脚本 | 🔴 待开始 | `install.sh` | `examples/install-macos.sh` |
-
-### 3.2 Linux systemd
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 3.2.1 | 编写 systemd service 模板 | 🔴 待开始 | 启动 vipd | `examples/hermes-vipd.service` |
-| 3.2.2 | 安装脚本 | 🔴 待开始 | `install.sh` | `examples/install-linux.sh` |
-
-### 3.3 初始配置
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 3.3.1 | 配置模板 | 🔴 待开始 | 默认 config.yaml | `examples/config.yaml` |
-| 3.3.2 | 安装引导 | 🔴 待开始 | 交互式初始化 | `examples/setup.sh` |
-
----
-
-## Phase 4：文档 & 发布
-
-| # | 任务 | 状态 | 产出 | 代码位置 |
-|---|------|------|------|----------|
-| 4.1 | README.md | 🔴 待开始 | 项目介绍+架构图 | `README.md` |
-| 4.2 | INSTALL.md | 🔴 待开始 | 安装指南（macOS/Linux） | `INSTALL.md` |
-| 4.3 | CONTRIBUTING.md | 🔴 待开始 | 连接器开发指南 | `CONTRIBUTING.md` |
-| 4.4 | SECURITY.md | 🔴 待开始 | 安全模型说明 | `SECURITY.md` |
-| 4.5 | GitHub 仓库初始化 | 🔴 待开始 | LICENSE + .gitignore | 根目录 |
-
----
-
-## 依赖 & 接口
-
-### 内部接口
-
-```
-Hermes Plugin ──request.sock──▶ VIP Daemon (approval_queue → executor)
-Hermes Plugin ◀──request.sock── VIP Daemon (结果返回)
-
-Connector ──control.sock──▶ VIP Daemon (审批响应)
-Connector ◀──(回调/通知)──── VIP Daemon (审批推送)
-```
-
-### 外部依赖
-
-| 依赖 | 用途 | 平台 |
+| 日期 | 变更 | 细节 |
 |------|------|------|
-| Hermes Agent | 插件宿主 | macOS/Linux |
-| Python 3.10+ | 运行时 | macOS/Linux |
-| launchd | 守护进程管理 | macOS |
-| systemd | 守护进程管理 | Linux |
-| Telegram Bot API | 可选连接器 | 跨平台 |
+| 2026-07-11 | **方向 C** — 删 bwrap/dangerous | 改为明确的 vip_sudo 路径 |
+| 2026-07-11 | **非阻塞 + vip_check** | handler 不阻塞，用 /vip-approve + vip_check 取结果 |
+| 2026-07-11 | **`{"action":"approve"}`** — 原生卡片 | 发现 pre_tool_call 可返回 approve 触发 Hermes 原生审批闸门 |
+| 2026-07-12 | **方向 C+** — guard.py + sudo_execute | vip_sudo handler 直接调 daemon 的 sudo_execute，去掉审批队列中转 |
+| 2026-07-12 | **防循环** | 同命令连续 3 次失败 → 120s 阻断 |
+| 2026-07-12 | **session approval** | 插件内存管理，不用 config.yaml 的 allowlist |
+| 2026-07-12 | **macOS 26 启动** | launchd exit 5 → 改用 Login Items + watchdog |
 
 ---
 
-## 当前进度
+## 当前架构
 
 ```
-Phase 0: 项目骨架    ████████████████  3/3 ✅
-Phase 1: Daemon 核心  ████████████████  11/11 ✅  (方向C: 移除了 dangerous, bwrap)
-Phase 2: Plugin      ████████████████  9/9 ✅   (方向C: 简化了 intercept + __init__)
-Phase 3: 安装部署    ████████████████  6/6 ✅   (沙箱验证通过)
-Phase 4: 文档发布    ████████████████  3/5 🟡
-
-总计: 32/34 ✅  (方向C 简化后减少 8 项)
+LLM → terminal("sudo xxx") → guard.block → "Use vip_sudo"
+LLM → vip_sudo("xxx") → pre_tool_call → {"action":"approve"} → 原生卡片
+                     → handler → sudo_execute(socket) → daemon → sudo <cmd> → root
 ```
 
-## 已完成的任务
+### 关键文件
 
-| # | 任务 | 状态 | 代码位置 |
-|---|------|------|----------|
-| 0.1 | 创建目录结构 | ✅ 完成 | `apps/hermes-vip/` |
-| 0.2 | 创建 WBS | ✅ 完成 | `WBS.md` |
-| 0.3 | 创建核心模块占位 | ✅ 完成 | 各 __init__.py |
-| 1.1.1 | 定义请求/响应格式 | ✅ 完成 | `docs/PROTOCOL.md` |
-| 1.1.2 | 定义 socket 路径规划 | ✅ 完成 | `daemon/socket_server.py` |
-| 1.2.1 | 实现 ApprovalQueue 类 | ✅ 完成 | `daemon/approval_queue.py` |
-| 1.2.2 | 实现 req_id 生成器 | ✅ 完成 | `daemon/approval_queue.py` |
-| 1.2.3 | 实现超时自动拒绝 | ✅ 完成 | `daemon/approval_queue.py` |
-| 1.2.4 | 实现 pending 表持久化 | ✅ 完成 | `daemon/approval_queue.py` |
-| 1.3.1 | 实现 Executor 类 | ✅ 完成 | `daemon/executor.py` |
-| 1.3.2 | stdout/stderr 捕获 | ✅ 完成 | `daemon/executor.py` |
-| 1.3.3 | 超时自动 kill | ✅ 完成 | `daemon/executor.py` |
-| 1.3.4 | 高危命令检测 | ✅ 完成 | `daemon/executor.py` |
-| 1.4.1 | 实现请求 socket 服务 | ✅ 完成 | `daemon/socket_server.py` |
-| 1.4.2 | 实现控制 socket 服务 | ✅ 完成 | `daemon/socket_server.py` |
-| 1.4.3 | 请求→队列→等待→返回流程 | ✅ 完成 | `daemon/socket_server.py` |
-| 1.4.4 | 多客户端并发支持 | ✅ 完成 | `daemon/socket_server.py` |
-| 1.5.1 | 定义 Connector 基类 | ✅ 完成 | `connectors/__init__.py` |
-| 1.5.2 | 实现 hermes_gateway 连接器 | ✅ 完成 | `connectors/hermes_gateway.py` |
-| 1.5.3 | 实现 CLI 连接器 | ✅ 完成 | `connectors/cli.py` |
-| 1.5.4 | OS dialog 连接器 | 🟡 占位 | `connectors/os_dialog.py` |
-| 1.6.1 | 实现 vipd.py 主循环 | ✅ 完成 | `daemon/vipd.py` |
-| 1.6.2 | 配置文件加载 | ✅ 完成 | `daemon/vipd.py` |
-| 1.6.3 | 日志系统 | ✅ 完成 | `daemon/vipd.py` |
-| 1.6.4 | 审计日志 | ✅ 完成 | `daemon/audit.py` |
-| 2.1.1 | 创建 plugin.yaml | ✅ 完成 | `hermes-plugin/plugin.yaml` |
-| 2.1.2 | 创建 __init__.py | ✅ 完成 | `hermes-plugin/__init__.py` |
-| 2.1.3 | 实现 register() 函数 | ✅ 完成 | `hermes-plugin/__init__.py` |
-| 2.2.1 | 拦截 sudo 命令 | ✅ 完成 | `hermes-plugin/intercept.py` |
-| 2.2.2 | 提交 VIP 并伪造错误 | ✅ 完成 | `hermes-plugin/intercept.py` |
-| 2.2.3 | 重试时检测 pending | ✅ 完成 | `hermes-plugin/intercept.py` |
-| 2.2.4 | 自动感知用户界面 | ✅ 完成 | `hermes-plugin/intercept.py` |
-| 2.3.1 | 注册 /vip-pending 命令 | ✅ 完成 | `hermes-plugin/gateway_handler.py` |
-| 2.3.2 | 注册 /vip-approve 命令 | ✅ 完成 | `hermes-plugin/gateway_handler.py` |
-| 2.3.3 | 注册 /vip-deny 命令 | ✅ 完成 | `hermes-plugin/gateway_handler.py` |
-| 2.3.4 | 绕过 LLM 机制 | ✅ 完成 | `gateway_handler.py` (依赖 Hermes 已有 bypass) |
-| 2.4.1 | Kill 文件检测 | ✅ 完成 | `hermes-plugin/intercept.py` |
-| 2.4.2 | Kill 文件创建脚本 | 🔴 待开始 | `examples/install-macos.sh` 已含 |
-| 3.1.1 | launchd plist 模板 | ✅ 完成 | `examples/com.hermes.vipd.plist` |
-| 3.1.2 | macOS 安装脚本 | ✅ 完成 | `examples/install-macos.sh` |
-| 3.2.1 | systemd service 模板 | ✅ 完成 | `examples/hermes-vipd.service` |
-| 3.2.2 | Linux 安装脚本 | ✅ 完成 | `examples/install-linux.sh` |
-| 3.3.1 | 配置模板 | ✅ 完成 | `examples/config.yaml` |
-| 3.3.2 | 安装引导 | 🔴 待开始 |
-| 4.1 | README.md | ✅ 完成 | `README.md` |
-| 4.2 | INSTALL.md | 🔴 待开始 | |
-| 4.3 | CONTRIBUTING.md | ✅ 完成 | `CONTRIBUTING.md` |
-| 4.4 | SECURITY.md | ✅ 完成 | `SECURITY.md` |
-| 4.5 | GitHub 仓库初始化 | ✅ 完成 | `.git` |
+| 文件 | 职责 |
+|------|------|
+| `hermes-plugin/guard.py` | pre_tool_call 钩子 + vip_sudo handler + 防循环 |
+| `hermes-plugin/__init__.py` | 插件注册入口 |
+| `hermes-plugin/gateway_handler.py` | /vip-pending 命令 |
+| `daemon/vipd.py` | daemon 主入口 |
+| `daemon/socket_server.py` | 双 socket 服务器 (request + control) |
+| `daemon/executor.py` | 命令执行器（自动 sudo） |
+| `examples/install-macos.sh` | macOS 安装（版本检测 + Login Items） |
+| `examples/install-linux.sh` | Linux 安装（版本检测 + systemd） |
 
-## 待讨论的设计决策
+---
 
-见 `docs/DESIGN_DECISIONS.md`
+## Phase 0: 项目骨架 ✅
+
+| # | 任务 | 状态 |
+|---|------|:---:|
+| 0.1 | 目录结构 | ✅ |
+| 0.2 | WBS | ✅ |
+| 0.3 | 模块占位 | ✅ |
+
+## Phase 1: Daemon 核心 ✅
+
+| # | 任务 | 文件 |
+|---|------|------|
+| 1.1 | socket 通信协议 | `socket_server.py` |
+| 1.2 | 审批队列 + TTL | `approval_queue.py` |
+| 1.3 | 命令执行器（auto sudo） | `executor.py` |
+| 1.4 | 双 socket 服务器 | `socket_server.py` |
+| 1.5 | 审计日志 | `audit.py` |
+| 1.6 | 主入口 | `vipd.py` |
+
+## Phase 2: Plugin ✅
+
+| # | 任务 | 文件 |
+|---|------|------|
+| 2.1 | plugin.yaml | `plugin.yaml` |
+| 2.2 | 守卫 (pre_tool_call) | `guard.py` |
+| 2.3 | vip_sudo handler | `guard.py` |
+| 2.4 | 防循环机制 | `guard.py` |
+| 2.5 | session 审批状态 | `guard.py` |
+| 2.6 | 注册入口 + pre_llm_call | `__init__.py` |
+| 2.7 | /vip-pending 命令 | `gateway_handler.py` |
+
+## Phase 3: 安装部署 ✅
+
+| # | 任务 | 文件 |
+|---|------|------|
+| 3.1 | macOS 安装脚本 | `examples/install-macos.sh` |
+| 3.2 | Linux 安装脚本 | `examples/install-linux.sh` |
+| 3.3 | Hermes 版本检测 (>= 0.18) | 两个脚本 |
+| 3.4 | CN Desktop 路径检测 | `install-macos.sh` |
+| 3.5 | Login Items + watchdog | `install-macos.sh` |
+
+## Phase 4: 文档 & 发布 🟡
+
+| # | 任务 | 状态 |
+|---|------|:---:|
+| 4.1 | 双语 README | ✅ |
+| 4.2 | WBS 更新 | ✅ |
+| 4.3 | Gitee 仓库 | ✅ |
+| 4.4 | GitHub 仓库 | ✅ |
+| 4.5 | GitHub PR (NousResearch) | 🔴 待准备 |
+| 4.6 | Linux 沙箱网关测试 | 🔴 待测试 |
+
+---
+
+## 踩坑记录
+
+### 1. Lambda 参数不匹配 (2026-07-11)
+
+**现象**：vip_sudo handler 调用 daemon 时报 "daemon closed connection"
+
+**根因**：Hermes v0.18.2 的 `register_tool` handler 接收 dict（`handler=lambda args, **kw: ...`），而不是 kwargs。参数名错了导致 command 被当作空字符串传给 daemon。
+
+**修复**：`handler=lambda args, **kw: guard.vip_sudo(args.get("command",""), ...)`
+
+### 2. `return_immediately` 绕过原生卡片 (2026-07-11)
+
+**现象**：用了 2 天时间做非阻塞文本审批卡（/vip-approve + vip_check），结果用户抱怨"只有一个选项"。
+
+**发现**：Hermes v0.18 的 `pre_tool_call` 支持第三个返回值 `{"action":"approve"}`，触发原生交互审批闸门（方向键选择 / 网关按钮）。
+
+**教训**：先查 Hermes 源码（`hermes_cli/plugins.py:_get_pre_tool_call_directive_details`），再设计。不要猜 API。
+
+### 3. `rule_key` 写进 config.yaml 的越权风险 (2026-07-12)
+
+**现象**：加 `rule_key` 后原生卡片出现 "always" 选项，选了写进 `~/.hermes/config.yaml`。admin 用户可读写它 → 注入代码能直接加 allowlist → 绕过审批。
+
+**修复**：每次 `rule_key` 随机生成 (`vip:sudo:<uuid>`)，写入的 key 下个会话失效。外加插件内存管理 session 审批。
+
+### 4. executor 没加 sudo → 命令无 root 权限 (2026-07-12)
+
+**现象**：沙箱测试 `vip_sudo("apt-get remove htop")` 报 "Permission denied"。daemon 以 hermes-vip 运行但命令没带 sudo。
+
+**修复**：executor 自动前置 `sudo`，并 strip LLM 可能传入的 `sudo` 防嵌套。
+
+### 5. macOS 26.5.2 launchd exit 5 (2026-07-12)
+
+**现象**：`sudo launchctl load` / `bootstrap` / `enable+load` 全部 exit 5。daemon 直接跑 `sudo /usr/local/bin/hermes-vipd` 正常。
+
+**原因**：macOS 26+ 系统级 LaunchDaemon 的 `load` 损坏。原 gateway 修复（PR #62223）只适用于用户级 LaunchAgent。
+
+**修复**：放弃 launchd，改用 Login Items + watchdog 脚本。重启后自动启动，watchdog 每 10 秒检查并自动恢复。
+
+### 6. _hermesvip 读不到 daemon 代码 → 崩溃循环 (2026-07-12)
+
+**现象**：watchdog 启动 daemon → 立即 crash → 10 秒后重启 → crash → 无限循环。
+
+**根因**：`/usr/local/lib/hermes-vip/` 属主 `root:wheel 644`，`_hermesvip` 不是 wheel 组，读不了 Python 模块。
+
+**修复**：安装脚本加 `chmod -R 755 /usr/local/lib/hermes-vip/`。
+
+### 7. watchdog 工作目录不可达 (2026-07-12)
+
+**现象**：watchdog 以 mac 身份运行 `sudo -u _hermesvip vipd` 时继承 mac 的 cwd，`_hermesvip` 访问不到 `/Users/mac/...`→ `getcwd: Permission denied`
+
+**修复**：watchdog 内 `start_daemon()` 先 `cd /tmp`。
+
+### 8. Hermes Desktop CN 版路径不同 (2026-07-12)
+
+**现象**：插件装到 `~/.hermes/plugins/` 不生效。
+
+**原因**：Desktop CN 版的 hermes-home 是 `~/Library/Application Support/cn.org.hermesagent.desktop/runtime/hermes-home/`。
+
+**修复**：安装脚本检测 CN Desktop 路径，自动安装到正确位置。
+
+### 9. 老专代码审计发现 HIGH 越权 (2026-07-12)
+
+- `_session_approved = True` 在 handler 开始时设置 → 连接 daemon 失败也标记为已批准 → 后续 vip_sudo 不弹卡
+- `json.dumps(req).encode()` 调两遍 → 协议一致性风险
+- `_recv_all` 未校验长度 → 数据不完整时静默错误
+
+全部已修。
+
+### 10. CLI 版本升级注意事项 (2026-07-12)
+
+- brew 版 `/opt/homebrew/bin/hermes` 是包装脚本 → 需要替换为指向 Desktop v0.18 binary 的 wrapper
+- Desktop `desktop-bin/hermes` 是版本包装器 → Desktop 升级时需同步更新
+- 用户 `.zshrc` 可能有 `alias hermes=...` → 需一并更新
+
+---
+
+## 待讨论
+
+| # | 议题 | 状态 |
+|---|------|:---:|
+| D1 | `_session_approved` 改为 per-session_id 管理（多用户场景） | 🔴 |
+| D2 | 去掉 admin 的 NOPASSWD sudo → 彻底锁死注入路径 | 🔴 |
+| D3 | daemon socket 目录权限 macOS vs Linux 差异 | ✅ 已解决 |
