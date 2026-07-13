@@ -43,9 +43,6 @@ def _has_privilege_escalation(command: str) -> bool:
             return True
     return False
 
-# ── 会话审批状态（插件内存，不写 config.yaml）──
-_session_approved = False
-
 # ── Stamp 验证（defense-in-depth）──
 # check() 盖章 → handler 验章 → handler 消章。
 # 直接调 vip_sudo handler（绕过审批卡）会被拒绝。
@@ -145,14 +142,14 @@ def check(tool_name: str, args: dict):
     if tool_name == "vip_sudo":
         # 盖章 — handler 入口会验章（defense-in-depth）
         _stamp(command)
-        # 会话内已批准过 → 跳过审批卡（但 handler 仍会验章）
-        if _session_approved:
-            return None
-        # 每次用随机 rule_key，防止 "always" 写入 config.yaml
+        # 固定 rule_key 让 Hermes 原生的 session/always 机制正常工作
+        # 用户选 Session → Hermes backend 记 session cache → 下次不弹卡
+        # 用户选 Always → 写 command_allowlist（固定 key，下次生效）
+        # 用户选 Run → 仅本次批准，下次还弹卡
         return {
             "action": "approve",
             "message": f"Execute with root: {command[:80]}",
-            "rule_key": f"vip:sudo:{uuid.uuid4().hex[:12]}",
+            "rule_key": "vip:sudo",
         }
 
     return None
@@ -170,7 +167,6 @@ def vip_sudo(command: str, reason: str = "") -> str:
     3. 阻塞等 daemon 执行结果
     4. 返回结果给 LLM
     """
-    global _session_approved
     if not command:
         return json.dumps({"error": "command required", "exit_code": -1})
 
@@ -240,7 +236,6 @@ def vip_sudo(command: str, reason: str = "") -> str:
             return loop_msg
 
         if ec == 0:
-            _session_approved = True  # 只在成功执行后设置
             return stdout or json.dumps({"status": "ok", "exit_code": 0})
         return json.dumps({"error": stderr or f"exit {ec}", "exit_code": ec})
     elif status == "denied":

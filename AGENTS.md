@@ -44,16 +44,22 @@ swift ~/hermes-workspace/sanzi/scripts/ocr.swift <image_path>
 | `main` | Active: blocks sudo, anti-loop, session state + stamp defense-in-depth | Daily use |
 | `passive-vip` | Passive: stamp/verify only | Community PR |
 
-## Security Architecture (v3.0)
+## Security Architecture (v3.2)
 
 ```
 LLM: vip_sudo("cmd")
   → check() → _stamp(cmd)              ← defense-in-depth: always stamp
-  → if _session_approved: return None   ← skip card for session
-  → else: return {action:approve}       ← Hermes native card
+  → return {action:"approve", rule_key:"vip:sudo"}
+  → Hermes approval card → user choice: once / session / always / deny
   → handler: _verify(cmd)               ← REJECTED if no stamp
   → daemon → sudo → root
 ```
+
+Session/always caching: handled entirely by Hermes core (VIP does NOT cache).
+Once: VIP always requests approval — Hermes returns approved without persisting.
+Session: Hermes writes in-memory session cache — subsequent calls skip card.
+Always: Hermes writes command_allowlist to config.yaml (remove manually to revoke).
+stamp/verify + terminal sudo interception + anti-loop = guard's defense-in-depth.
 
 ## Dev Rules
 
