@@ -41,11 +41,9 @@ CONTROL_SOCK = "/var/run/hermes-vip/control.sock"
 SOCKET_DIR = "/var/run/hermes-vip/"
 
 # ── Socket 权限 ──
-# request.sock: hermes 组可读写（770）
-REQUEST_SOCK_MODE = 0o666
-# control.sock: 任何用户可连，但 daemon 会验证对端 UID（666）
-CONTROL_SOCK_MODE = 0o666
-# 父目录: 仅 root 可遍历（700）
+# 660: 属主 _hermesvip，组 daemon。mac 需在 daemon 组（安装脚本会检测）
+REQUEST_SOCK_MODE = 0o660
+CONTROL_SOCK_MODE = 0o660
 SOCKET_DIR_MODE = 0o755
 
 # ── 信任的 UID ──

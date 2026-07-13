@@ -1,213 +1,231 @@
 #!/bin/bash
+# ==============================================================================
+# Hermes VIP — Linux 安装脚本 v3.0 (systemd)
+#
+# 安装目录: /usr/local/lib/hermes-vip/ (daemon 代码)
+#          /usr/local/bin/hermes-vipd   (daemon 入口)
+#          /etc/hermes-vip/            (配置)
+#          /run/hermes-vip/            (socket, systemd RuntimeDirectory)
+#          /var/log/hermes-vip/        (日志)
+#
+# 开发目录: ~/hermes-workspace/apps/hermes-vip/
+# ==============================================================================
 set -euo pipefail
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 echo "┌─────────────────────────────────────────────┐"
-echo "│  Hermes VIP — 安装 / 升级                    │"
+echo "│  Hermes VIP — Linux 安装 v3.0               │"
 echo "└─────────────────────────────────────────────┘"
 echo ""
 
-# ── 检测系统 ──
-IS_MAC=false
-case "$(uname)" in Darwin) IS_MAC=true ;; Linux) ;; *) echo "❌ 不支持"; exit 1 ;; esac
+[ "$(uname)" = "Linux" ] || { echo -e "${RED}❌ 仅支持 Linux${NC}"; exit 1; }
+[ "$EUID" -eq 0 ] || { echo -e "${RED}❌ 需要 root: sudo bash install-linux.sh${NC}"; exit 1; }
 
-# ── 找到真实用户（兼容 sudo 场景）──
-REAL_USER="${SUDO_USER:-$(logname 2>/dev/null || whoami)}"
+# ── 检测真实用户 ──
+REAL_USER="${SUDO_USER:-}"
+[ -z "$REAL_USER" ] && REAL_USER="$(logname 2>/dev/null || echo '')"
+[ -z "$REAL_USER" ] && REAL_USER="$(who am i 2>/dev/null | awk '{print $1}' || echo '')"
+[ -z "$REAL_USER" ] || [ "$REAL_USER" = "root" ] && {
+    echo -e "${RED}❌ 无法检测当前用户${NC}"
+    echo "   手动: REAL_USER=用户名 sudo -E bash install-linux.sh"
+    exit 1
+}
 REAL_HOME="$(eval echo ~$REAL_USER)"
 HERMES_HOME="${HERMES_HOME:-$REAL_HOME/.hermes}"
-HERMES_BIN="$(sudo -u $REAL_USER which hermes 2>/dev/null || echo $HERMES_HOME/bin/hermes)"
-if [ ! -f "$HERMES_BIN" ] && [ ! -f "$HERMES_HOME/bin/hermes" ]; then
-  echo "❌ 请先安装 Hermes: curl -fsSL https://hermes-agent.nousresearch.com/install.sh | bash"
-  exit 1
-fi
-[ -f "$HERMES_BIN" ] || HERMES_BIN="$HERMES_HOME/bin/hermes"
+echo "👤 $REAL_USER (home=$REAL_HOME)"
+echo "📦 Hermes home: $HERMES_HOME"
 
-# ── Hermes 版本检测（>= v0.18 才支持原生审批卡）──
-HVER=$("$HERMES_BIN" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0")
+# ── Hermes 版本检测 ──
+MIN_HERMES="0.18.0"
+hermes_version() { "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0"; }
 version_gte() { printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | grep -qx "$1"; }
-if ! version_gte "$HVER" "0.18.0"; then
-    echo "❌ Hermes 版本过低 ($HVER < 0.18.0)"
-    echo "   VIP 需要 Hermes >= 0.18.0 才支持原生审批卡片"
-    echo "   请升级: hermes update"
+
+HERMES_BIN="$(sudo -u "$REAL_USER" which hermes 2>/dev/null || echo "$HERMES_HOME/bin/hermes")"
+HERMES_VER="$(hermes_version "$HERMES_BIN")"
+if ! version_gte "$HERMES_VER" "$MIN_HERMES"; then
+    echo -e "${RED}❌ Hermes $HERMES_VER < $MIN_HERMES（不支持原生审批卡片）${NC}"
     exit 1
 fi
-echo "🆗 Hermes $HVER"
+echo "🆗 Hermes $HERMES_VER ($HERMES_BIN)"
 
-# ── 0. 前置检查 ──
+# ── 配置 ──
+VIP_USER="hermes-vip"
+VIP_BIN="/usr/local/bin/hermes-vipd"
+VIP_LIB="/usr/local/lib/hermes-vip"
+VIP_ETC="/etc/hermes-vip"
+VIP_RUN="/run/hermes-vip"
+VIP_LOG="/var/log/hermes-vip"
+VIP_SERVICE="hermes-vipd"
+
+# ── 0. 清理旧部署 ──
 echo ""
-echo "🔍 环境检查..."
+echo "🧹 清理旧部署..."
+systemctl stop "$VIP_SERVICE" 2>/dev/null || true
+systemctl disable "$VIP_SERVICE" 2>/dev/null || true
+pkill -f "hermes-vipd" 2>/dev/null || true
+pkill -f "daemon.vipd" 2>/dev/null || true
+sleep 1
+rm -f "$VIP_RUN/request.sock" "$VIP_RUN/control.sock" 2>/dev/null || true
+# 清理旧版 macOS launchd plist（如果跨平台同步过来的）
+rm -f /Library/LaunchDaemons/com.hermes.vipd.plist /Library/LaunchAgents/com.hermes.vipd.plist 2>/dev/null || true
+# 清理旧版 sandbox 引用
+rm -f /usr/local/bin/hermes-sandbox 2>/dev/null || true
+echo "  ✅ 清理完成"
 
-# 0a. 用户同意
-echo "  将创建 hermes-vip 用户（不可登录、不可 SSH）"
-echo "  该用户用于执行你批准后的提权命令。"
-read -p "是否继续安装 VIP？[Y/n] " consent
-case "$consent" in
-  [nN]|[nN][oO]) echo "❌ 已取消"; exit 1 ;;
-  *) echo "  ✅ 已确认" ;;
-esac
-
-# 0b. 检查 root 用户
-if ! getent passwd root > /dev/null 2>&1; then
-  echo "❌ 系统中不存在 root 用户，VIP 需要 root 用户来运行 daemon"
-  echo "  请先创建 root 用户后再安装"
-  exit 1
-fi
-echo "  ✅ root 用户存在"
-
-# 0c. 检查 Hermes 用户权限
-echo "  🔍 $REAL_USER 的 sudo 权限:"
-
+# ── 1. hermes-vip 用户 ──
 echo ""
-echo "✅ 用户: $REAL_USER"
-echo "✅ Hermes: $($HERMES_BIN --version 2>&1 | head -1)"
-
-# ── 项目路径 ──
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(cd "$SCRIPT_DIR/.." 2>/dev/null && pwd)"
-
-# ── 1. 停旧 daemon ──
-echo ""
-echo "🛑 停止旧服务..."
-if $IS_MAC; then
-  sudo launchctl bootout system/com.hermes.vipd 2>/dev/null && echo "  已停止" || echo "  未运行"
+echo "👤 配置 $VIP_USER 用户..."
+if ! id "$VIP_USER" &>/dev/null; then
+    useradd -r -s /sbin/nologin -d /var/empty -c "Hermes VIP Daemon" "$VIP_USER"
+    echo "  ✅ $VIP_USER 创建"
 else
-  sudo systemctl stop hermes-vipd 2>/dev/null && echo "  已停止" || echo "  未运行"
+    # 确保 shell 正确
+    usermod -s /sbin/nologin "$VIP_USER" 2>/dev/null || true
+    echo "  ⏭  $VIP_USER 已存在，shell 已设为 /sbin/nologin"
 fi
+echo "  ✅ 组成员已最小化"
 
-# ── 2. 装 Plugin（用真实用户身份）──
+# ── 2. sudoers ──
 echo ""
-echo "📦 安装 Plugin..."
-sudo -u $REAL_USER mkdir -p "$HERMES_HOME/plugins/hermes-vip/"
-if [ -d "$PROJECT_DIR/hermes-plugin" ]; then
-  sudo -u $REAL_USER cp $PROJECT_DIR/hermes-plugin/*.py "$HERMES_HOME/plugins/hermes-vip/" 2>/dev/null
-  sudo -u $REAL_USER cp $PROJECT_DIR/hermes-plugin/plugin.yaml "$HERMES_HOME/plugins/hermes-vip/" 2>/dev/null
-fi
-echo "  ✅ $HERMES_HOME/plugins/hermes-vip/"
-
-# ── 3. 启用 Plugin ──
-echo "  正在启用 Plugin..."
-HERMES_BIN="$(sudo -u $REAL_USER which hermes 2>/dev/null || echo $HERMES_HOME/bin/hermes)"
-if [ -x "$HERMES_BIN" ]; then
-    sudo -u $REAL_USER $HERMES_BIN plugins enable hermes-vip 2>/dev/null && \
-        echo "  ✅ Plugin 已启用" || \
-        echo "  ⚠️  Plugin 启用失败，手动: hermes plugins enable hermes-vip"
+echo "🔐 配置 sudoers..."
+S="/etc/sudoers.d/$VIP_USER"
+if [ ! -f "$S" ]; then
+    echo "# VIP daemon — NOPASSWD 是有意设计: 安全边界在审批卡+stamp 验证,不在 sudoers 命令白名单" > "$S"
+    echo "$VIP_USER ALL=(ALL) NOPASSWD: ALL" >> "$S"
+    chmod 440 "$S"
+    echo "  ✅ hermes-vip sudoers"
 else
-    echo "  ⚠️  Hermes CLI 未找到，手动启用"
+    echo "  ⏭  已存在"
 fi
+
+# ── 3. Socket 访问 ──
 echo ""
-
-# ── 4. 备份旧配置 ──
-if [ -f /etc/hermes-vip/config.yaml ]; then
-  sudo cp /etc/hermes-vip/config.yaml "/etc/hermes-vip/config.yaml.bak.$(date +%Y%m%d)"
-  echo "  ✅ 旧配置已备份到 config.yaml.bak.$(date +%Y%m%d)"
-fi
-
-# ── 5. 创建提权用户
-if ! id hermes-vip >/dev/null 2>&1; then
-  echo "  📋 创建提权用户 hermes-vip..."
-  sudo useradd -r -s /sbin/nologin hermes-vip
-  echo "    ✅ hermes-vip 已创建（不可登录、不可 SSH）"
-fi
-
-# ── 6. sudoers
-if [ ! -f /etc/sudoers.d/hermes-vip ]; then
-  sudo tee /etc/sudoers.d/hermes-vip > /dev/null << SUDOERS
-hermes-vip ALL=(ALL) NOPASSWD: ALL
-SUDOERS
-  sudo chmod 440 /etc/sudoers.d/hermes-vip
-  echo "  ✅ sudoers 已配置"
-fi
-
-# ── 7. 安装 Daemon（需要 root）──
-if [ "$EUID" -ne 0 ]; then
-  echo "🔧 需要 root 权限安装 daemon：sudo $0"
-  exit 0
-fi
-
-if $IS_MAC; then
-  VIP_RUN=/var/run/hermes-vip
+echo "🔗 配置 socket 访问..."
+VIP_GID=$(id -g "$VIP_USER")
+if ! id -nG "$REAL_USER" | tr ' ' '\n' | grep -qx "$VIP_GID\|$VIP_USER"; then
+    # 把真实用户加入 hermes-vip 的组以便连接 socket
+    usermod -a -G "$VIP_USER" "$REAL_USER" 2>/dev/null && \
+        echo "  ✅ $REAL_USER 已加入 $VIP_USER 组" || \
+        echo "  ⚠️  手动: usermod -a -G $VIP_USER $REAL_USER"
 else
-  VIP_RUN=/run/hermes-vip
+    echo "  ✅ $REAL_USER 已在 $VIP_USER 组"
 fi
-VIP_BIN=/usr/local/bin/hermes-vipd
-VIP_LIB=/usr/local/lib/hermes-vip
-VIP_ETC=/etc/hermes-vip
 
-sudo mkdir -p $VIP_LIB/daemon $VIP_LIB/connectors $VIP_ETC $VIP_RUN
-sudo cp $PROJECT_DIR/daemon/*.py $VIP_LIB/daemon/
-sudo cp $PROJECT_DIR/daemon/*.json $VIP_LIB/daemon/ 2>/dev/null || true
-sudo cp $PROJECT_DIR/connectors/*.py $VIP_LIB/connectors/
-echo '' | sudo tee $VIP_LIB/__init__.py > /dev/null
+# ── 4. 安装 daemon ──
+echo ""
+echo "📦 安装 daemon..."
+rm -rf "$VIP_LIB" 2>/dev/null || true
+mkdir -p "$VIP_LIB/daemon" "$VIP_LIB/connectors"
+cp "$PROJECT_DIR/daemon/"*.py "$VIP_LIB/daemon/"
+cp "$PROJECT_DIR/connectors/"*.py "$VIP_LIB/connectors/"
+touch "$VIP_LIB/__init__.py"
+chmod -R 755 "$VIP_LIB"
+echo "  ✅ daemon 代码: $VIP_LIB"
 
-sudo tee $VIP_BIN > /dev/null << 'LAUNCHER'
+# Daemon wrapper
+cat > "$VIP_BIN" << 'LB'
 #!/bin/bash
 export PYTHONPATH="/usr/local/lib/hermes-vip:$PYTHONPATH"
+cd /tmp
+HOME=/var/empty
 exec python3 -m daemon.vipd "$@"
-LAUNCHER
-sudo chmod +x $VIP_BIN
+LB
+chmod 755 "$VIP_BIN"
+echo "  ✅ daemon 入口: $VIP_BIN"
 
-# ── 6. 配置 ──
-if [ ! -f $VIP_ETC/config.yaml ]; then
-  sudo tee $VIP_ETC/config.yaml > /dev/null << CONF
-trusted_user: $REAL_USER
+# ── 5. 目录 ──
+mkdir -p "$VIP_ETC" "$VIP_LOG"
+chmod 755 "$VIP_ETC" "$VIP_LOG"
+chown "root:$VIP_USER" "$VIP_LOG"
+[ -f "$VIP_ETC/config.yaml" ] || {
+    cp "$PROJECT_DIR/examples/config.yaml" "$VIP_ETC/config.yaml" 2>/dev/null || {
+        # 如果 examples/config.yaml 不存在，生成最小配置
+        cat > "$VIP_ETC/config.yaml" << 'MINCONF'
+daemon:
+  log_level: info
+  audit_log: /var/log/hermes-vip/audit.log
 sockets:
-  request: $VIP_RUN/request.sock
-  control: $VIP_RUN/control.sock
-CONF
-  sudo chmod 640 $VIP_ETC/config.yaml
-  sudo chown hermes-vip:hermes-vip $VIP_ETC/config.yaml
-fi
+  request: /run/hermes-vip/request.sock
+  control: /run/hermes-vip/control.sock
+executor:
+  timeout: 300
+  max_stdout_bytes: 50000
+MINCONF
+    }
+    chmod 644 "$VIP_ETC/config.yaml"
+    chown "root:$VIP_USER" "$VIP_ETC/config.yaml"
+}
+echo "  ✅ 目录就绪"
 
-# ── 7. 注册服务 ──
-if $IS_MAC; then
-  sudo tee /Library/LaunchDaemons/com.hermes.vipd.plist > /dev/null << 'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>Label</key><string>com.hermes.vipd</string>
-<key>ProgramArguments</key><array><string>/usr/local/bin/hermes-vipd</string></array>
-<key>RunAtLoad</key><true/><key>KeepAlive</key><true/>
-<key>UserName</key><string>root</string>
-</dict></plist>
-PLIST
-  sudo launchctl load /Library/LaunchDaemons/com.hermes.vipd.plist 2>/dev/null || true
-else
-  sudo tee /etc/systemd/system/hermes-vipd.service > /dev/null << 'SERVICE'
+# ── 6. systemd 服务 ──
+echo ""
+echo "⚙️  注册 systemd 服务..."
+cat > "/etc/systemd/system/$VIP_SERVICE.service" << SERVICE
 [Unit]
 Description=Hermes VIP Daemon
 After=network.target
+
 [Service]
 Type=simple
-User=hermes-vip
-ExecStart=/usr/local/bin/hermes-vipd
+User=$VIP_USER
+Group=$VIP_USER
+ExecStart=$VIP_BIN
 Restart=always
+RestartSec=5
 RuntimeDirectory=hermes-vip
 RuntimeDirectoryMode=0755
+
 [Install]
 WantedBy=multi-user.target
 SERVICE
-  sudo systemctl daemon-reload
-  sudo systemctl enable hermes-vipd 2>/dev/null
-  sudo chown hermes-vip:hermes-vip /etc/hermes-vip/config.yaml 2>/dev/null || true
-sudo systemctl start hermes-vipd
+
+systemctl daemon-reload
+systemctl enable "$VIP_SERVICE"
+systemctl start "$VIP_SERVICE"
+echo "  ✅ systemd 服务已注册并启动"
+
+# ── 7. Plugin ──
+echo ""
+echo "🔌 安装 Plugin..."
+PDIR="$HERMES_HOME/plugins/hermes-vip"
+rm -rf "$PDIR" 2>/dev/null || true
+sudo -u "$REAL_USER" mkdir -p "$PDIR"
+sudo -u "$REAL_USER" cp "$PROJECT_DIR/hermes-plugin/"* "$PDIR/"
+rm -rf "$PDIR/__pycache__" 2>/dev/null || true
+echo "  ✅ Plugin 文件: $PDIR"
+
+if [ -x "$HERMES_BIN" ]; then
+    echo n | sudo -u "$REAL_USER" "$HERMES_BIN" plugins enable hermes-vip 2>/dev/null && \
+        echo "  ✅ Plugin 已启用" || \
+        echo "  ⚠️  手动: $HERMES_BIN plugins enable hermes-vip"
 fi
 
-sleep 2
-echo "  ✅ Daemon 已启动"
-
-# 自动重启 Hermes（让插件生效）
+# ── 8. 等待就绪 ──
 echo ""
-echo "🔄 重启 Hermes..."
-pkill -f "hermes.desktop|hermes.chat|hermes_cli" 2>/dev/null || true
-sleep 1
-echo "  ✅ 已就绪"
+echo "⏳ 等待 daemon 就绪..."
+sleep 2
+for i in $(seq 1 10); do
+    [ -S "$VIP_RUN/request.sock" ] && break
+    sleep 0.5
+done
+
+if [ -S "$VIP_RUN/request.sock" ]; then
+    echo "  ✅ daemon 运行中"
+    ls -la "$VIP_RUN/request.sock"
+else
+    echo -e "  ${YELLOW}⚠️  daemon 未在预期时间内启动${NC}"
+    echo "  检查: systemctl status $VIP_SERVICE"
+    echo "  日志: journalctl -u $VIP_SERVICE -n 20"
+fi
 
 echo ""
 echo "┌─────────────────────────────────────────────┐"
-echo "│  ✅ 安装完成                                 │"
+echo "│  ${GREEN}✅ Hermes VIP v3.0 安装完成${NC}                   │"
 echo "│                                             │"
-echo "│  已启用沙箱隔离: /usr/local/bin/hermes-sandbox │"
-echo "│  对话中可使用:                                │"
-echo "│    /vip-pending   查看待审批                 │"
-echo "│    /vip-approve   批准请求                   │"
-echo "│    /vip-deny      拒绝请求                   │"
+echo "│  自启动: systemd (systemctl enable hermes-vipd) │"
+echo "│  管理: systemctl status/restart hermes-vipd  │"
+echo "│  日志: journalctl -u hermes-vipd -f          │"
+echo "│  重启 Hermes Desktop/CLI 使 Plugin 生效     │"
 echo "└─────────────────────────────────────────────┘"

@@ -6,6 +6,9 @@ Guard — Hermes VIP 安全守卫
 两个路径：
 1. terminal("sudo xxx") → 拦截并重定向到 vip_sudo
 2. vip_sudo(...) → 触发原生交互审批卡片，批准后自动通过 daemon 执行
+
+Defense-in-depth: handler 入口必须验章（stamp/verify），
+即使 Hermes backend 因任何原因绕过审批卡，handler 自己拒绝未盖章的命令。
 """
 
 import json
@@ -21,10 +24,55 @@ from collections import defaultdict
 logger = logging.getLogger("hermes-vip.guard")
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
-SUDO_RE = re.compile(r"^\s*sudo\s", re.IGNORECASE)
+# 匹配 shell 命令中的提权尝试。
+# \bsudo\b 覆盖: sudo, /usr/bin/sudo, sh -c 'sudo ...', eval "sudo ..."
+# 不覆盖: $() / `` 展开、subprocess.run(['sudo'])——但 LLM 极少对 terminal 用这些
+SUDO_PATTERNS = [
+    re.compile(r"\bsudo\b", re.IGNORECASE),       # sudo, /usr/bin/sudo, sh -c 'sudo'
+    re.compile(r"\bdoas\b", re.IGNORECASE),        # OpenBSD 提权
+    re.compile(r"\bpkexec\b", re.IGNORECASE),      # Linux PolicyKit 提权
+    re.compile(r"\bsu\s+-", re.IGNORECASE),        # su - 切换用户
+    re.compile(r"""['"]sudo['"]""", re.IGNORECASE),  # python -c "import os; os.system('sudo')"
+]
+
+
+def _has_privilege_escalation(command: str) -> bool:
+    """检测命令中是否包含提权尝试。"""
+    for pat in SUDO_PATTERNS:
+        if pat.search(command):
+            return True
+    return False
 
 # ── 会话审批状态（插件内存，不写 config.yaml）──
 _session_approved = False
+
+# ── Stamp 验证（defense-in-depth）──
+# check() 盖章 → handler 验章 → handler 消章。
+# 直接调 vip_sudo handler（绕过审批卡）会被拒绝。
+_STAMP_TTL = 30  # handler 在审批批准后立刻执行，30s 足够宽裕
+_stamps: dict[str, float] = {}
+
+
+def _stamp(command: str):
+    """Mark a command as having passed through the approval gate."""
+    key = command[:120]
+    _stamps[key] = time.time()
+    # 惰性清理过期印章
+    now = time.time()
+    for k in list(_stamps):
+        if now - _stamps[k] > _STAMP_TTL * 2:
+            del _stamps[k]
+
+
+def _verify(command: str) -> bool:
+    """Verify the command was stamped by check(). Returns True and clears stamp."""
+    key = command[:120]
+    ts = _stamps.pop(key, None)
+    if ts is None:
+        return False
+    if time.time() - ts > _STAMP_TTL:
+        return False
+    return True
 
 
 # ── 防循环 ──
@@ -85,7 +133,7 @@ def check(tool_name: str, args: dict):
     """
     command = args.get("command", "") if isinstance(args, dict) else ""
 
-    if tool_name == "terminal" and SUDO_RE.match(command):
+    if tool_name == "terminal" and _has_privilege_escalation(command):
         return {
             "action": "block",
             "message": (
@@ -95,7 +143,9 @@ def check(tool_name: str, args: dict):
         }
 
     if tool_name == "vip_sudo":
-        # 会话内已批准过 → 跳过审批
+        # 盖章 — handler 入口会验章（defense-in-depth）
+        _stamp(command)
+        # 会话内已批准过 → 跳过审批卡（但 handler 仍会验章）
         if _session_approved:
             return None
         # 每次用随机 rule_key，防止 "always" 写入 config.yaml
@@ -115,14 +165,25 @@ def vip_sudo(command: str, reason: str = "") -> str:
     """
     vip_sudo 工具 handler。
     在原生审批卡片批准后执行：
-    1. 提交到 daemon → 取 req_id
-    2. 自动批准（原生卡片已认证用户）
+    1. 验章 — 拒绝未经 check() 盖章的命令（defense-in-depth）
+    2. 提交到 daemon
     3. 阻塞等 daemon 执行结果
     4. 返回结果给 LLM
     """
     global _session_approved
     if not command:
         return json.dumps({"error": "command required", "exit_code": -1})
+
+    # ── Defense-in-depth: 必须经过 check() 盖章 ──
+    if not _verify(command):
+        logger.error(
+            "REJECTED unapproved vip_sudo command (pid=%s): %s",
+            os.getpid(), command[:120],
+        )
+        return json.dumps({
+            "error": "REJECTED: command was not approved through the privilege gate",
+            "exit_code": -1,
+        })
 
     # 1. 连接 daemon 提交直接执行请求（跳过审批，原生卡片已认证）
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

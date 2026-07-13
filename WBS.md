@@ -256,6 +256,47 @@ LLM → vip_sudo("xxx") → pre_tool_call → stamp → {"action":"approve"} →
 
 ---
 
+## 2026-07-13 安全加固
+
+### Stamp 验证（defense-in-depth）
+
+**背景**：Desktop 原生版审批卡在 gateway notify 未注册时可能静默回退到 `submit_pending` 队列——如果 `resolve_pre_tool_block` 在此路径有 bug，handler 会在无用户审批的情况下执行。
+
+**修复**：从 `passive-vip` 分支的 stamp/verify 模式中提取 defense-in-depth 机制合并到 main 分支：
+
+- `check()` 返回前先 `_stamp(command)` 盖章
+- `vip_sudo()` handler 入口处 `_verify(command)` 验章——无章直接 REJECTED
+- 印章 30s TTL，单次消费
+- `_session_approved=True` 路径也盖章（免审批卡但验章链不跳过）
+
+详见 guard.py 完整重写。
+
+### 权限最小化
+
+| 维度 | 修复前 | 修复后 |
+|------|--------|--------|
+| socket 权限 | 0666（任意进程可连） | 0660 `_hermesvip:daemon` |
+| mac 用户 | 不在 daemon 组 | 加入 daemon 组 |
+| `_hermesvip` 多余组 | `_lpoperator`/`localaccounts`/sharepoint | `dseditgroup -d` 清理（部分受 SIP 保护删不掉，安全影响低） |
+| 废弃 launchd plist | 残留 /Library/Launch{Daemon,Agent}s/ | 安装脚本清理 |
+
+### 安装脚本 v3.0
+
+- 开发和部署路径完全分离
+
+| 用途 | 路径 |
+|------|------|
+| git 仓库 | `~/hermes-workspace/apps/hermes-vip/` |
+| daemon 安装 | `/usr/local/lib/hermes-vip/` |
+| daemon 入口 | `/usr/local/bin/hermes-vipd` |
+| plugin 安装 | `~/.hermes/plugins/hermes-vip/` |
+| watchdog | `~/.hermes/scripts/hermes-vipd-watchdog.sh` |
+
+- daemon wrapper 修复：`cd /tmp; HOME=/var/empty` 避免 `_hermesvip` 的 cwd 权限问题
+- daemon 用系统 Python 3.9 (`/usr/bin/python3`)，只依赖 stdlib
+
+---
+
 ## 待讨论
 
 | # | 议题 | 状态 |
@@ -264,3 +305,5 @@ LLM → vip_sudo("xxx") → pre_tool_call → stamp → {"action":"approve"} →
 | D2 | 等待上游 PR #63066 review 反馈 | 🟡 |
 | D3 | daemon socket 目录权限 macOS vs Linux 差异 | ✅ |
 | D4 | 微信网关 + vip_sudo 完整测试 | 🔴 |
+| D5 | Desktop gateway notify 回退至 submit_pending 时的审批卡丢失 | 🟡 待上游沟通 |
+| D6 | `_hermesvip` 创建时阻止 macOS 自动加入 _lpoperator 等组 | 🔴 |

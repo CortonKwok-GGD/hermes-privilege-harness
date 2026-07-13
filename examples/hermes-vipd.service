@@ -1,30 +1,19 @@
 [Unit]
-Description=Hermes VIP Daemon — Root privilege escalation gateway
+Description=Hermes VIP Daemon
 After=network.target
 
 [Service]
 Type=simple
 User=hermes-vip
-Group=root
+Group=hermes-vip
 ExecStart=/usr/local/bin/hermes-vipd
 Restart=always
 RestartSec=5
-StandardOutput=append:/var/log/hermes-vip/stdout.log
-StandardError=append:/var/log/hermes-vip/stderr.log
 
-# Runtime directories
+# macOS 踩坑记录: NoNewPrivileges=yes 会阻断 daemon 的 sudo 提权
+# 安全边界在 VIP 审批卡 + stamp 验证，不在 systemd 沙箱
 RuntimeDirectory=hermes-vip
-RuntimeDirectoryMode=0700
-LogsDirectory=hermes-vip
-LogsDirectoryMode=0755
-ConfigurationDirectory=hermes-vip
-ConfigurationDirectoryMode=0700
-
-# Security hardening
-NoNewPrivileges=yes
-ProtectHome=yes
-ProtectSystem=full
-ReadWritePaths=/var/run/hermes-vip /var/log/hermes-vip
+RuntimeDirectoryMode=0755
 
 [Install]
 WantedBy=multi-user.target
