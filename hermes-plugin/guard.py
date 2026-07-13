@@ -24,29 +24,38 @@ from collections import defaultdict
 logger = logging.getLogger("hermes-vip.guard")
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
-# 匹配 shell 命令中的提权尝试。
+BLOCKLIST_FILE = os.environ.get("VIP_BLOCKLIST_FILE", "/usr/local/etc/hermes-vip/blocklist.yaml")
+
+# ── terminal sudo 拦截 ──
 # \bsudo\b 覆盖: sudo, /usr/bin/sudo, sh -c 'sudo ...', eval "sudo ..."
-# 不覆盖: $() / `` 展开、subprocess.run(['sudo'])——但 LLM 极少对 terminal 用这些
 SUDO_PATTERNS = [
-    re.compile(r"\bsudo\b", re.IGNORECASE),       # sudo, /usr/bin/sudo, sh -c 'sudo'
-    re.compile(r"\bdoas\b", re.IGNORECASE),        # OpenBSD 提权
-    re.compile(r"\bpkexec\b", re.IGNORECASE),      # Linux PolicyKit 提权
-    re.compile(r"\bsu\s+-", re.IGNORECASE),        # su - 切换用户
-    re.compile(r"""['"]sudo['"]""", re.IGNORECASE),  # python -c "import os; os.system('sudo')"
+    re.compile(r"\bsudo\b", re.IGNORECASE),
+    re.compile(r"\bdoas\b", re.IGNORECASE),
+    re.compile(r"\bpkexec\b", re.IGNORECASE),
+    re.compile(r"\bsu\s+-", re.IGNORECASE),
+    re.compile(r"""['"]sudo['"]""", re.IGNORECASE),
 ]
+
+# SSH 远程命令（如 "ssh host sudo xxx"）中的提权由 SSH 认证负责，VIP 放行
+_SSH_REMOTE_RE = re.compile(
+    r"(?:^|\s)ssh\s+(?:-[a-zA-Z0-9]+\s+)*(?:\S+@)?\S+\s+", re.IGNORECASE
+)
 
 
 def _has_privilege_escalation(command: str) -> bool:
-    """检测命令中是否包含提权尝试。"""
+    """检测命令中是否包含提权尝试。SSH 远程命令放行。"""
+    if _SSH_REMOTE_RE.search(command):
+        return False
     for pat in SUDO_PATTERNS:
         if pat.search(command):
             return True
     return False
 
+
 # ── Stamp 验证（defense-in-depth）──
 # check() 盖章 → handler 验章 → handler 消章。
 # 直接调 vip_sudo handler（绕过审批卡）会被拒绝。
-_STAMP_TTL = 30  # handler 在审批批准后立刻执行，30s 足够宽裕
+_STAMP_TTL = 15  # handler 在审批批准后立刻执行，15s 够宽裕
 _stamps: dict[str, float] = {}
 
 
@@ -54,7 +63,6 @@ def _stamp(command: str):
     """Mark a command as having passed through the approval gate."""
     key = command[:120]
     _stamps[key] = time.time()
-    # 惰性清理过期印章
     now = time.time()
     for k in list(_stamps):
         if now - _stamps[k] > _STAMP_TTL * 2:
@@ -74,18 +82,17 @@ def _verify(command: str) -> bool:
 
 # ── 防循环 ──
 _recent: dict[str, list[float]] = defaultdict(list)
-_MAX_FAIL = 3          # 连续失败 N 次后阻断
-_WINDOW = 60           # 时间窗口（秒）
-_COOLDOWN = 120        # 阻断持续秒数
+_MAX_FAIL = 3
+_WINDOW = 60
+_COOLDOWN = 120
 _blocked_until: dict[str, float] = {}
 
 
 def _check_loop(command: str, exit_code: int):
     """检测是否陷入循环。返回阻断消息或 None。"""
-    key = command[:60]  # 用命令前缀做 key
+    key = command[:60]
     now = time.time()
 
-    # 检查是否在阻断期
     if key in _blocked_until and now < _blocked_until[key]:
         remaining = int(_blocked_until[key] - now)
         return (
@@ -94,7 +101,6 @@ def _check_loop(command: str, exit_code: int):
             f"Try a different approach or wait."
         )
 
-    # 清理过期的记录
     _recent[key] = [t for t in _recent[key] if now - t < _WINDOW]
 
     if exit_code != 0:
@@ -108,12 +114,80 @@ def _check_loop(command: str, exit_code: int):
                 f"This is likely a system-level issue, not a retry problem."
             )
     else:
-        # 成功后重置
         _recent[key].clear()
         if key in _blocked_until:
             del _blocked_until[key]
 
     return None
+
+
+# ── vip_sudo 黑名单 ──
+# 即使用户批准了审批卡，以下操作也不允许执行。
+_BLOCKLIST_CACHE: tuple[float, list[tuple[re.Pattern, str]]] = (0, [])
+_BLOCKLIST_CACHE_TTL = 60
+
+# 硬编码后备黑名单 — 当 blocklist.yaml 不可读时使用，防止 fail-open
+_FALLBACK_BLOCKLIST: list[tuple[str, str]] = [
+    (r"\buseradd\b|\badduser\b", "创建新用户"),
+    (r"\bpasswd\b|\bchpasswd\b", "修改密码"),
+    (r"\busermod\b.*-G\s+.*\b(sudo|wheel)\b", "赋予用户 sudo 权限"),
+    (r"\bvisudo\b|/etc/sudoers", "编辑 sudoers 文件"),
+    (r"\brm\s+.*-r.*f.*\s+/|rm\s+.*--no-preserve-root", "删除根目录"),
+    (r"\bmkfs\b|dd\s+.*of=/dev/", "格式化或覆写磁盘"),
+    (r"\bchmod\s+.*[67]77\s+/|\bchmod\s+.*\+s\b", "全局提权或设置 SUID"),
+    (r"\bssh-keygen\b.*-f.*authorized|>>\s*\S*authorized_keys", "写入 SSH authorized_keys"),
+    (r"\bcrontab\b\s+-[^l]|^\s*@reboot\b", "编辑 crontab 或持久化任务"),
+    (r"\biptables\s+.*-F\b|\bufw\s+disable\b", "关闭防火墙"),
+]
+
+
+def _load_blocklist() -> list[tuple[re.Pattern, str]]:
+    """Load blocklist from config file. Falls back to hardcoded rules if file unreadable."""
+    global _BLOCKLIST_CACHE
+    now = time.time()
+    if now - _BLOCKLIST_CACHE[0] < _BLOCKLIST_CACHE_TTL:
+        return _BLOCKLIST_CACHE[1]
+
+    try:
+        import yaml
+    except ImportError:
+        patterns = _compile_fallback()
+        _BLOCKLIST_CACHE = (now, patterns)
+        return patterns
+
+    patterns = []
+    try:
+        with open(BLOCKLIST_FILE) as f:
+            cfg = yaml.safe_load(f) or {}
+        for entry in cfg.get("blocked_patterns", []):
+            pat = entry.get("pattern", "")
+            label = entry.get("label", pat)
+            if pat:
+                patterns.append((re.compile(pat, re.IGNORECASE), label))
+        if not patterns:
+            raise ValueError("empty blocklist")
+    except FileNotFoundError:
+        logger.warning("blocklist file not found, using fallback: %s", BLOCKLIST_FILE)
+        patterns = _compile_fallback()
+    except Exception as e:
+        logger.warning("failed to load blocklist, using fallback: %s", e)
+        patterns = _compile_fallback()
+
+    _BLOCKLIST_CACHE = (now, patterns)
+    return patterns
+
+
+def _compile_fallback() -> list[tuple[re.Pattern, str]]:
+    """Compile hardcoded fallback blocklist."""
+    return [(re.compile(pat, re.IGNORECASE), label) for pat, label in _FALLBACK_BLOCKLIST]
+
+
+def _check_blocklist(command: str) -> tuple[bool, str]:
+    """Check command against blocklist. Returns (blocked, reason)."""
+    for pat, label in _load_blocklist():
+        if pat.search(command):
+            return True, label
+    return False, ""
 
 
 # ── pre_tool_call 主入口 ──
@@ -140,12 +214,7 @@ def check(tool_name: str, args: dict):
         }
 
     if tool_name == "vip_sudo":
-        # 盖章 — handler 入口会验章（defense-in-depth）
         _stamp(command)
-        # 固定 rule_key 让 Hermes 原生的 session/always 机制正常工作
-        # 用户选 Session → Hermes backend 记 session cache → 下次不弹卡
-        # 用户选 Always → 写 command_allowlist（固定 key，下次生效）
-        # 用户选 Run → 仅本次批准，下次还弹卡
         return {
             "action": "approve",
             "message": f"Execute with root: {command[:80]}",
@@ -163,9 +232,10 @@ def vip_sudo(command: str, reason: str = "") -> str:
     vip_sudo 工具 handler。
     在原生审批卡片批准后执行：
     1. 验章 — 拒绝未经 check() 盖章的命令（defense-in-depth）
-    2. 提交到 daemon
-    3. 阻塞等 daemon 执行结果
-    4. 返回结果给 LLM
+    2. 黑名单检查 — 高危操作提示用户手动执行
+    3. 提交到 daemon
+    4. 阻塞等 daemon 执行结果
+    5. 返回结果给 LLM
     """
     if not command:
         return json.dumps({"error": "command required", "exit_code": -1})
@@ -181,7 +251,28 @@ def vip_sudo(command: str, reason: str = "") -> str:
             "exit_code": -1,
         })
 
-    # 1. 连接 daemon 提交直接执行请求（跳过审批，原生卡片已认证）
+    # ── 黑名单检查 ──
+    blocked, label = _check_blocklist(command)
+    if blocked:
+        logger.warning(
+            "BLOCKED dangerous vip_sudo command (pid=%s, rule=%s): %s",
+            os.getpid(), label, command[:120],
+        )
+        return json.dumps({
+            "error": (
+                f"BLOCKED: {label}\n\n"
+                f"This operation is blocked by VIP security policy. "
+                f"It can modify system integrity, create persistent access, "
+                f"or cause irreversible damage.\n\n"
+                f"Execute this command manually in a terminal:\n\n"
+                f"  {command}\n\n"
+                f"To allow this operation permanently, "
+                f"edit the blocklist: {BLOCKLIST_FILE}"
+            ),
+            "exit_code": -1,
+        })
+
+    # 1. 连接 daemon 提交直接执行请求
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)
 
@@ -205,7 +296,7 @@ def vip_sudo(command: str, reason: str = "") -> str:
         sock.close()
         return json.dumps({"error": f"submit failed: {exc}", "exit_code": -1})
 
-    # 2. 收结果（sudo_execute 直接返回，不需审批队列）
+    # 2. 收结果
     try:
         raw = _recv_all(sock, 4)
         if not raw or len(raw) < 4:
@@ -230,7 +321,6 @@ def vip_sudo(command: str, reason: str = "") -> str:
         stderr = r.get("stderr", "")
         ec = r.get("exit_code", -1)
 
-        # 防循环检查
         loop_msg = _check_loop(command, ec)
         if loop_msg:
             return loop_msg

@@ -1,0 +1,50 @@
+# Hermes VIP — 命令黑名单
+# 即使在审批卡批准后，匹配的命令也会被拒绝执行。
+# 修改此文件需要 root 权限。修改后 60 秒内生效（guard 层缓存）。
+
+blocked_patterns:
+  # ── 用户管理 ──
+  - pattern: '\buseradd\b|\badduser\b|dscl\s+.*\s+-create\s+/Users/'
+    label: 创建新用户
+  - pattern: '\bpasswd\b|\bchpasswd\b|dscl\s+.*\s+-passwd'
+    label: 修改密码
+  - pattern: '\busermod\b.*-G\s+.*\b(sudo|wheel)\b|usermod\b.*-a\s+.*\b(sudo|wheel)\b'
+    label: 赋予用户 sudo 权限
+  - pattern: '\bvisudo\b|/etc/sudoers(\.d/)?'
+    label: 编辑 sudoers 文件
+
+  # ── 系统破坏 ──
+  - pattern: '\brm\s+.*-r.*f.*\s+/|rm\s+.*--no-preserve-root'
+    label: 删除根目录
+  - pattern: '\bmkfs\b|dd\s+.*of=/dev/|dd\s+/dev/.*of='
+    label: 格式化或覆写磁盘
+
+  # ── 权限提升 ──
+  - pattern: '\bchmod\s+.*[67]77\s+/|\bchmod\s+.*\+s\s+\S+sh\b|\bchmod\s+.*u\+s\b'
+    label: 全局提权或设置 SUID
+
+  # ── 持久化 ──
+  - pattern: '\bssh-keygen\b.*-f.*authorized|>>\s*\S*authorized_keys'
+    label: 写入 SSH authorized_keys
+  - pattern: '\bcrontab\b\s+-[^l]|^\s*@reboot\b|\|\s*crontab\b'
+    label: 编辑 crontab 或添加持久化任务
+
+  # ── 网络安全 ──
+  - pattern: '\biptables\s+.*-F\b|\bufw\s+disable\b'
+    label: 关闭防火墙
+
+  # ── 拒绝服务 ──
+  - pattern: '\(\)\s*\{\s*:\s*\|:\s*&\s*\}\s*;?\s*:|function\s+\w+\s*\{\s*:\|:&\s*\}'
+    label: fork bomb
+
+  # ── macOS 特定 ──
+  - pattern: '\bdscl\s+.*\s+-append\s+/Groups/admin\b'
+    label: macOS 添加管理员
+  - pattern: '\blaunchctl\s+load\b'
+    label: macOS 加载 LaunchDaemon/Agent
+  - pattern: '\bsecurity\s+add-trusted-cert\b'
+    label: macOS 添加信任证书
+  - pattern: '\bspctl\s+--master-disable\b'
+    label: macOS 禁用 Gatekeeper
+  - pattern: '\bcsrutil\s+disable\b'
+    label: macOS 禁用 SIP

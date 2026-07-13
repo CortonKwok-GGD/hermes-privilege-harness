@@ -159,6 +159,16 @@ MINCONF
 }
 echo "  ✅ 目录就绪"
 
+# ── 5b. Blocklist ──
+BLOCKLIST_FILE="/usr/local/etc/hermes-vip/blocklist.yaml"
+mkdir -p "$(dirname "$BLOCKLIST_FILE")"
+if [ ! -f "$BLOCKLIST_FILE" ]; then
+    cp "$PROJECT_DIR/examples/blocklist.yaml" "$BLOCKLIST_FILE"
+    chmod 640 "$BLOCKLIST_FILE" 2>/dev/null || chmod 644 "$BLOCKLIST_FILE"
+    chown "root:$VIP_USER" "$BLOCKLIST_FILE" 2>/dev/null || chown root:root "$BLOCKLIST_FILE"
+    echo "  ✅ blocklist: $BLOCKLIST_FILE"
+fi
+
 # ── 6. systemd 服务 ──
 echo ""
 echo "⚙️  注册 systemd 服务..."

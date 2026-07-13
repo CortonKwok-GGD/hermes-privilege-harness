@@ -195,6 +195,16 @@ chown "$VIP_USER:daemon" "$VIP_RUN" "$VIP_LOG"
 }
 echo "  ✅ 目录就绪"
 
+# ── 5b. Blocklist ──
+BLOCKLIST_FILE="/usr/local/etc/hermes-vip/blocklist.yaml"
+mkdir -p "$(dirname "$BLOCKLIST_FILE")"
+if [ ! -f "$BLOCKLIST_FILE" ]; then
+    cp "$PROJECT_DIR/examples/blocklist.yaml" "$BLOCKLIST_FILE"
+    chmod 644 "$BLOCKLIST_FILE"
+    chown root:daemon "$BLOCKLIST_FILE" 2>/dev/null || chown root:wheel "$BLOCKLIST_FILE"
+    echo "  ✅ blocklist: $BLOCKLIST_FILE"
+fi
+
 # ── 6. 自启动（Watchdog + Login Items）──
 echo ""
 echo "⚙️  配置自启动..."
