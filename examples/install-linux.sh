@@ -232,10 +232,22 @@ fi
 
 echo ""
 echo "┌─────────────────────────────────────────────┐"
-echo "│  ${GREEN}✅ Hermes VIP v3.0 安装完成${NC}                   │"
+echo "│  ${GREEN}✅ Hermes VIP v3.3 安装完成${NC}                   │"
 echo "│                                             │"
 echo "│  自启动: systemd (systemctl enable hermes-vipd) │"
 echo "│  管理: systemctl status/restart hermes-vipd  │"
 echo "│  日志: journalctl -u hermes-vipd -f          │"
-echo "│  重启 Hermes Desktop/CLI 使 Plugin 生效     │"
+echo "│                                             │"
+echo "│  ⚠️  组变更: 如果 $REAL_USER 刚加入 $VIP_USER 组，    │"
+echo "│     执行 newgrp $VIP_USER 或重新登录使组生效     │"
+echo "│     然后重启 Hermes: hermes chat              │"
 echo "└─────────────────────────────────────────────┘"
+
+# 检测是否需要 newgrp
+if ! id -nG "$REAL_USER" | tr ' ' '\n' | grep -qx "$VIP_USER"; then
+    echo ""
+    echo -e "${YELLOW}⚠️  $REAL_USER 不在 $VIP_USER 组！${NC}"
+    echo "   Hermes 进程无法连接 daemon socket。"
+    echo "   执行: newgrp $VIP_USER"
+    echo "   然后重新启动 Hermes chat/desktop"
+fi

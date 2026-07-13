@@ -307,3 +307,47 @@ LLM → vip_sudo("xxx") → pre_tool_call → stamp → {"action":"approve"} →
 | D4 | 微信网关 + vip_sudo 完整测试 | 🔴 |
 | D5 | Desktop gateway notify 回退至 submit_pending 时的审批卡丢失 | 🟡 待上游沟通 |
 | D6 | `_hermesvip` 创建时阻止 macOS 自动加入 _lpoperator 等组 | 🔴 |
+| D7 | daemon 层 blocklist 检查（当前只在 guard 层做） | 🔴 |
+| D8 | stamp key 改为 SHA-256 摘要（消除 120 字符前缀碰撞风险） | 🔵 低优 |
+
+---
+
+## 2026-07-13 v3.2+v3.3 — 审批缓存重构 & 黑名单
+
+### 审批缓存：从 VIP 自缓存 → Hermes 原生
+
+**问题链**：
+- v3.0: `_session_approved` 在 handler ec==0 后设 True → **用户选 once 也被记住** ❌
+- v3.1: 删 `_session_approved`，加 `_last_success` 5min TTL → **同 bug，once 也 TTL** ❌
+- v3.2: 完全删掉所有 VIP 层缓存，`check()` 每次都返回 approve ✅
+- 审批缓存完全由 Hermes 原生机制管理：`approve_session()` (Session) 和 `command_allowlist` (Always)
+- `rule_key` 从随机 UUID 改为固定 `"vip:sudo"`，使 Hermes 原生 session/always 机制生效
+- 用户选 Run(once) → 下次必弹卡。选 Session → 进程内免卡。选 Always → 永久免卡
+
+**老专架构分析**（2026-07-13）：handler 拿不到用户的 choice (once/session/always)。这是在 Hermes 架构下的根本约束。VIP 不应自行缓存——任何猜测都会出错。
+
+### 黑名单 (v3.3)
+
+- **配置文件**: `/usr/local/etc/hermes-vip/blocklist.yaml`（YAML，16条规则）
+- **热加载**: 60s 缓存，`_load_blocklist()` 自动重读
+- **Fail-closed**: 文件丢失/损坏/YAML错误 → 加载硬编码 `_FALLBACK_BLOCKLIST`（10条核心规则）
+- **权限**: macOS SIP 限制为 `root:wheel 644`，Linux 设 `root:daemon 640`
+- **消息**: blocked 时提示用户手动在终端执行，不直接拒绝
+
+### SSH 远程 sudo 放行
+
+- `_SSH_REMOTE_RE` 匹配 `ssh [opts] [user@]host cmd`
+- SSH 远程命令中的 sudo 不拦截，由 SSH 认证负责远端安全
+
+### 老专代码审计结果
+
+2026-07-13 审计发现（已全部修复）：
+1. ✅ 5 条 blocklist 高危绕过（参数交换、替代工具、管道写入等）→ 已修复 16 条规则
+2. ✅ blocklist fail-open → 改为 fail-closed（硬编码 fallback）
+3. 🟡 SSH ProxyCommand 本地 sudo 绕过 → 分析后确认：需要本机 NOPASSWD（已不存在）+ SSH 凭证
+4. ✅ blocklist.yaml 信息泄露 → macOS SIP 限制，Linux 设 640
+5. 🔵 Stamp 前缀碰撞 → 低风险，标记为 D8 待讨论
+
+### stamp TTL
+
+15s（从 30s 缩短）。handler 在审批后立即同步执行，15s 足够宽裕。

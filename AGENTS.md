@@ -32,6 +32,7 @@ swift ~/hermes-workspace/sanzi/scripts/ocr.swift <image_path>
 | Plugin install | `~/.hermes/plugins/hermes-vip/` |
 | Watchdog | `~/.hermes/scripts/hermes-vipd-watchdog.sh` |
 | Login Item | `~/.hermes/apps/hermes-vipd-watchdog.app` (AppleScript wrapper) |
+| Blocklist | `/usr/local/etc/hermes-vip/blocklist.yaml` (16 rules, fail-closed) |
 | Sandbox | `ssh admin@10.0.0.3` |
 | PR fork (local) | `~/hermes-workspace/hermes-agent-pr` |
 | PR upstream | https://github.com/NousResearch/hermes-agent/pull/63066 |
@@ -44,12 +45,17 @@ swift ~/hermes-workspace/sanzi/scripts/ocr.swift <image_path>
 | `main` | Active: blocks sudo, anti-loop, session state + stamp defense-in-depth | Daily use |
 | `passive-vip` | Passive: stamp/verify only | Community PR |
 
-## Security Architecture (v3.2)
+## Security Architecture (v3.3)
 
 ```
+LLM: terminal("sudo xxx")
+  → _has_privilege_escalation() → SSH远程? 放行 : 匹配5模式? block : pass
+  → block → "Use vip_sudo"
+
 LLM: vip_sudo("cmd")
   → check() → _stamp(cmd)              ← defense-in-depth: always stamp
   → return {action:"approve", rule_key:"vip:sudo"}
+  → _check_blocklist(cmd)               ← YAML + fallback (fail-closed)
   → Hermes approval card → user choice: once / session / always / deny
   → handler: _verify(cmd)               ← REJECTED if no stamp
   → daemon → sudo → root
@@ -59,7 +65,8 @@ Session/always caching: handled entirely by Hermes core (VIP does NOT cache).
 Once: VIP always requests approval — Hermes returns approved without persisting.
 Session: Hermes writes in-memory session cache — subsequent calls skip card.
 Always: Hermes writes command_allowlist to config.yaml (remove manually to revoke).
-stamp/verify + terminal sudo interception + anti-loop = guard's defense-in-depth.
+Blocklist: /usr/local/etc/hermes-vip/blocklist.yaml (16 rules, fail-closed fallback).
+stamp/verify + terminal sudo interception + blocklist + anti-loop = guard's defense-in-depth.
 
 ## Dev Rules
 
