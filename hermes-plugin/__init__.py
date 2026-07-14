@@ -11,7 +11,7 @@ def _inject_git_push_pattern():
     """Inject git push into Hermes native dangerous-pattern detection."""
     try:
         from tools.approval import DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED
-        pattern = (r'\bgit\s+push\b', "git push (requires approval)")
+        pattern = (r'(?:^|[;&|&(])\s*git\s+push\b', "git push (requires approval)")
         if pattern not in DANGEROUS_PATTERNS:
             DANGEROUS_PATTERNS.append(pattern)
             DANGEROUS_PATTERNS_COMPILED.append(
