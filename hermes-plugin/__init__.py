@@ -22,9 +22,33 @@ def _inject_git_push_pattern():
         logger.warning("failed to inject git push pattern: %s", e)
 
 
+def _patch_approval_display():
+    """Monkey-patch _run_approval_gate 让 vip_sudo 的卡标题显示真实命令。"""
+    try:
+        from tools.approval import _run_approval_gate as _original
+        import functools
+
+        @functools.wraps(_original)
+        def _patched(*, display_target, description, **kw):
+            if description and description.startswith("sudo:"):
+                display_target = description
+            return _original(
+                display_target=display_target,
+                description=description,
+                **kw,
+            )
+
+        import tools.approval
+        tools.approval._run_approval_gate = _patched
+        logger.info("patched _run_approval_gate for vip_sudo display")
+    except Exception as e:
+        logger.warning("failed to patch approval display: %s", e)
+
+
 def register(ctx):
-    # ── 0. 注入 git push 到 Hermes 原生危险命令检测 ──
+    # ── 0. 注入 git push + 修补审批卡显示 ──
     _inject_git_push_pattern()
+    _patch_approval_display()
 
     # ── 1. pre_tool_call：拦截 sudo + 触发原生审批卡片 ──
     ctx.register_hook("pre_tool_call", _hook)
