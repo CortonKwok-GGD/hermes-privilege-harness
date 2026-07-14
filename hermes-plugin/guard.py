@@ -9,6 +9,7 @@ Security: vip_sudo handler refuses any command it hasn't stamped in check().
           A command must pass through the approval gate before it executes.
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -29,7 +30,7 @@ _stamps: dict[str, float] = {}
 
 def _stamp(command: str):
     """Mark a command as having passed through the approval gate."""
-    key = command[:120]  # use prefix as key (rejects command-truncation attacks)
+    key = hashlib.sha256(command.encode()).hexdigest()
     _stamps[key] = time.time()
     # Clean expired stamps
     now = time.time()
@@ -40,7 +41,7 @@ def _stamp(command: str):
 
 def _verify(command: str) -> bool:
     """Verify the command was stamped by check(). Returns True and clears stamp."""
-    key = command[:120]
+    key = hashlib.sha256(command.encode()).hexdigest()
     ts = _stamps.pop(key, None)
     if ts is None:
         return False
