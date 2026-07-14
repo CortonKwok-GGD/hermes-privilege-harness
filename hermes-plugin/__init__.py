@@ -1,18 +1,31 @@
-"""
-Hermes VIP 插件 — 原生卡片 + daemon 架构
-
-1. Guard: terminal("sudo ...") → 拦截，重定向到 vip_sudo
-2. Card: vip_sudo(...) → {"action":"approve"} → 原生交互卡片
-3. Execute: 批准后通过 daemon（hermes-vip 用户）执行
-"""
+"""Hermes VIP plugin - native approval + daemon + git push injection"""
 
 import logging
+import re
 from . import guard
 
 logger = logging.getLogger("hermes-vip.plugin")
 
 
+def _inject_git_push_pattern():
+    """Inject git push into Hermes native dangerous-pattern detection."""
+    try:
+        from tools.approval import DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED
+        pattern = (r'\bgit\s+push\b', "git push (requires approval)")
+        if pattern not in DANGEROUS_PATTERNS:
+            DANGEROUS_PATTERNS.append(pattern)
+            DANGEROUS_PATTERNS_COMPILED.append(
+                (re.compile(pattern[0], re.IGNORECASE), pattern[1])
+            )
+            logger.info("injected git push into Hermes DANGEROUS_PATTERNS")
+    except Exception as e:
+        logger.warning("failed to inject git push pattern: %s", e)
+
+
 def register(ctx):
+    # ── 0. 注入 git push 到 Hermes 原生危险命令检测 ──
+    _inject_git_push_pattern()
+
     # ── 1. pre_tool_call：拦截 sudo + 触发原生审批卡片 ──
     ctx.register_hook("pre_tool_call", _hook)
 
@@ -62,7 +75,7 @@ def register(ctx):
 
 
 def _hook(tool_name, args, **kwargs):
-    """pre_tool_call: 拦截 sudo → 重定向；vip_sudo → 触发原生卡片"""
+    """pre_tool_call: block sudo -> vip_sudo; vip_sudo -> native approval"""
     return guard.check(tool_name, args if isinstance(args, dict) else {})
 
 

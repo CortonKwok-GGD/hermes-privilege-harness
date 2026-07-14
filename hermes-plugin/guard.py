@@ -4,8 +4,8 @@
 
 拦截路径：
 - terminal("sudo xxx") → 拦截并重定向到 vip_sudo
-- terminal("git push ...") → 原生审批卡，批准后继续执行
-- vip_sudo(...) → 原生审批卡，批准后走 daemon sudo 执行
+- terminal("git push ...") → 拦截并重定向到 vip_sudo
+- vip_sudo → 审批卡，批准后执行（sudo 命令走 daemon，git push 本地直接跑）
 
 Defense-in-depth: handler 入口必须验章（stamp/verify），
 即使 Hermes backend 因任何原因绕过审批卡，handler 自己拒绝未盖章的命令。
@@ -18,6 +18,7 @@ import os
 import re
 import socket
 import struct
+import subprocess
 import time
 import uuid
 from collections import defaultdict
@@ -229,18 +230,14 @@ def check(tool_name: str, args: dict):
                     "Use the vip_sudo tool for privileged commands."
                 ),
             }
-        if _is_git_push_operation(command):
-            return {
-                "action": "approve",
-                "message": f"Git push requires approval: {command[:80]}",
-                "rule_key": "vip:git",
-            }
+        # git push 由 Hermes 原生 DANGEROUS_PATTERNS 处理（__init__.py 注入）
+        # 此处放行，不拦截
 
     if tool_name == "vip_sudo":
         _stamp(command)
         return {
             "action": "approve",
-            "message": f"Execute with root: {command[:80]}",
+            "message": f"sudo: {command[:80]}",
             "rule_key": "vip:sudo",
         }
 
@@ -294,6 +291,29 @@ def vip_sudo(command: str, reason: str = "") -> str:
             ),
             "exit_code": -1,
         })
+
+    # ── Git push 执行路径（不走 daemon sudo）──
+    if _is_git_push_operation(command):
+        logger.info(
+            "Executing git push locally (pid=%s): %s",
+            os.getpid(), command[:120],
+        )
+        try:
+            result = subprocess.run(
+                command, shell=True, capture_output=True,
+                text=True, timeout=120,
+            )
+            ec = result.returncode
+            stdout = result.stdout
+            stderr = result.stderr
+            if ec == 0:
+                return stdout or json.dumps({"status": "ok", "exit_code": 0})
+            return json.dumps({"error": stderr or f"exit {ec}", "exit_code": ec})
+        except subprocess.TimeoutExpired:
+            return json.dumps({"error": "git push timed out after 120s", "exit_code": -1})
+        except Exception as e:
+            logger.error("git push execution failed: %s", e)
+            return json.dumps({"error": f"git push execution failed: {e}", "exit_code": -1})
 
     # 1. 连接 daemon 提交直接执行请求
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
