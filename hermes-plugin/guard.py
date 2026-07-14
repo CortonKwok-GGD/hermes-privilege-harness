@@ -1,16 +1,17 @@
-"""
-Guard — Hermes VIP 安全守卫
+"""Guard — Hermes VIP 安全守卫
 
 单一责任：在 pre_tool_call 钩子中判断工具调用是否需要审批。
 
-两个路径：
-1. terminal("sudo xxx") → 拦截并重定向到 vip_sudo
-2. vip_sudo(...) → 触发原生交互审批卡片，批准后自动通过 daemon 执行
+拦截路径：
+- terminal("sudo xxx") → 拦截并重定向到 vip_sudo
+- terminal("git push ...") → 原生审批卡，批准后继续执行
+- vip_sudo(...) → 原生审批卡，批准后走 daemon sudo 执行
 
 Defense-in-depth: handler 入口必须验章（stamp/verify），
 即使 Hermes backend 因任何原因绕过审批卡，handler 自己拒绝未盖章的命令。
 """
 
+import hashlib
 import json
 import logging
 import os
@@ -41,6 +42,15 @@ _SSH_REMOTE_RE = re.compile(
     r"(?:^|\s)ssh\s+(?:-[a-zA-Z0-9]+\s+)*(?:\S+@)?\S+\s+", re.IGNORECASE
 )
 
+# ── git push 拦截 ──
+# 所有 git push 操作（含 --force/--delete/tag）必须经过审批
+_GIT_PUSH_RE = re.compile(r"\bgit\s+push\b", re.IGNORECASE)
+
+
+def _is_git_push_operation(command: str) -> bool:
+    """检测命令是否为 git push 操作。"""
+    return bool(_GIT_PUSH_RE.search(command))
+
 
 def _has_privilege_escalation(command: str) -> bool:
     """检测命令中是否包含提权尝试。SSH 远程命令放行。"""
@@ -61,7 +71,7 @@ _stamps: dict[str, float] = {}
 
 def _stamp(command: str):
     """Mark a command as having passed through the approval gate."""
-    key = command[:120]
+    key = hashlib.sha256(command.encode()).hexdigest()
     _stamps[key] = time.time()
     now = time.time()
     for k in list(_stamps):
@@ -71,7 +81,7 @@ def _stamp(command: str):
 
 def _verify(command: str) -> bool:
     """Verify the command was stamped by check(). Returns True and clears stamp."""
-    key = command[:120]
+    key = hashlib.sha256(command.encode()).hexdigest()
     ts = _stamps.pop(key, None)
     if ts is None:
         return False
@@ -89,17 +99,20 @@ _blocked_until: dict[str, float] = {}
 
 
 def _check_loop(command: str, exit_code: int):
-    """检测是否陷入循环。返回阻断消息或 None。"""
+    """检测是否陷入循环。返回 JSON 错误或 None。"""
     key = command[:60]
     now = time.time()
 
     if key in _blocked_until and now < _blocked_until[key]:
         remaining = int(_blocked_until[key] - now)
-        return (
-            f"This command has failed repeatedly. "
-            f"Auto-blocked for {remaining}s to prevent loop. "
-            f"Try a different approach or wait."
-        )
+        return json.dumps({
+            "error": (
+                f"This command has failed repeatedly. "
+                f"Auto-blocked for {remaining}s to prevent loop. "
+                f"Try a different approach or wait."
+            ),
+            "exit_code": -1,
+        })
 
     _recent[key] = [t for t in _recent[key] if now - t < _WINDOW]
 
@@ -108,11 +121,14 @@ def _check_loop(command: str, exit_code: int):
         if len(_recent[key]) >= _MAX_FAIL:
             _blocked_until[key] = now + _COOLDOWN
             _recent[key].clear()
-            return (
-                f"Command failed {_MAX_FAIL} times in {_WINDOW}s. "
-                f"Auto-blocked for {_COOLDOWN}s. "
-                f"This is likely a system-level issue, not a retry problem."
-            )
+            return json.dumps({
+                "error": (
+                    f"Command failed {_MAX_FAIL} times in {_WINDOW}s. "
+                    f"Auto-blocked for {_COOLDOWN}s. "
+                    f"This is likely a system-level issue, not a retry problem."
+                ),
+                "exit_code": -1,
+            })
     else:
         _recent[key].clear()
         if key in _blocked_until:
@@ -132,9 +148,9 @@ _FALLBACK_BLOCKLIST: list[tuple[str, str]] = [
     (r"\bpasswd\b|\bchpasswd\b", "修改密码"),
     (r"\busermod\b.*-G\s+.*\b(sudo|wheel)\b", "赋予用户 sudo 权限"),
     (r"\bvisudo\b|/etc/sudoers", "编辑 sudoers 文件"),
-    (r"\brm\s+.*-r.*f.*\s+/|rm\s+.*--no-preserve-root", "删除根目录"),
+    (r"\brm\b\s+(?:-[rRfF]+\s+)*\S+/\s*$|rm\s+.*--no-preserve-root", "删除根目录"),
     (r"\bmkfs\b|dd\s+.*of=/dev/", "格式化或覆写磁盘"),
-    (r"\bchmod\s+.*[67]77\s+/|\bchmod\s+.*\+s\b", "全局提权或设置 SUID"),
+    (r"\bchmod\b\s+(?:-[a-zA-Z]+\s+)*[67]77\s+\S+|chmod\s+.*\+s\b", "全局提权或设置 SUID"),
     (r"\bssh-keygen\b.*-f.*authorized|>>\s*\S*authorized_keys", "写入 SSH authorized_keys"),
     (r"\bcrontab\b\s+-[^l]|^\s*@reboot\b", "编辑 crontab 或持久化任务"),
     (r"\biptables\s+.*-F\b|\bufw\s+disable\b", "关闭防火墙"),
@@ -204,14 +220,21 @@ def check(tool_name: str, args: dict):
     """
     command = args.get("command", "") if isinstance(args, dict) else ""
 
-    if tool_name == "terminal" and _has_privilege_escalation(command):
-        return {
-            "action": "block",
-            "message": (
-                "Sudo is not available via the terminal tool.\n"
-                "Use the vip_sudo tool for privileged commands."
-            ),
-        }
+    if tool_name == "terminal":
+        if _has_privilege_escalation(command):
+            return {
+                "action": "block",
+                "message": (
+                    "Sudo is not available via the terminal tool.\n"
+                    "Use the vip_sudo tool for privileged commands."
+                ),
+            }
+        if _is_git_push_operation(command):
+            return {
+                "action": "approve",
+                "message": f"Git push requires approval: {command[:80]}",
+                "rule_key": "vip:git",
+            }
 
     if tool_name == "vip_sudo":
         _stamp(command)

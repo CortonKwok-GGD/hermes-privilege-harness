@@ -351,3 +351,36 @@ LLM → vip_sudo("xxx") → pre_tool_call → stamp → {"action":"approve"} →
 ### stamp TTL
 
 15s（从 30s 缩短）。handler 在审批后立即同步执行，15s 足够宽裕。
+
+---
+
+## 2026-07-14 — Git Push 保护
+
+### 现状
+
+终端拦截所有 `git push` 操作（含 `--force`/`--delete`/tag），直接在 terminal 审批中弹卡：
+
+```
+terminal("git push origin main")
+  → guard 检测到 git push
+  → 弹出审批卡（rule_key: "vip:git"）
+  → 用户批准后，原命令直接执行（不走 daemon，不走 vip_sudo）
+```
+
+- 不需要 root 权限，不走 daemon
+- 不影响 `git clone`/`fetch`/`pull`/`checkout`
+- 独立的 `vip:git` rule_key，session/always 缓存与 sudo 审批互不干扰
+
+### 文件变更
+
+| 文件 | 变更 |
+|------|------|
+| `hermes-plugin/guard.py` | 加 `_is_git_push_operation()`；`check()` 中拦截 git push；`vip_sudo()` handler 中本地执行 |
+
+### 后续规划
+
+| # | 议题 | 优先级 |
+|---|------|:-----:|
+| G1 | **PAT/Deploy Key 方案**：生成写专用密钥/PAT，锁进 daemon，从 GitHub/Gitee 移除 `id_ed25519` 写权限，实现物理层保护 | 🔵 待定 |
+| G2 | **`vip_git` 工具**：独立于 `vip_sudo` 的专属 git 审批工具，语义清晰，不走 daemon，支持更多 git 操作 | 🔵 待定 |
+
