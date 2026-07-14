@@ -33,7 +33,10 @@ def _patch_approval_display():
 
         @functools.wraps(_original)
         def _patched(*, display_target, description, **kw):
-            if description and description.startswith("sudo:"):
+            if description and (
+                description.startswith("sudo:")
+                or description.startswith("Execute with root:")
+            ):
                 display_target = description
             return _original(
                 display_target=display_target,

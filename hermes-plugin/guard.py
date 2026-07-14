@@ -59,7 +59,7 @@ def check(tool_name: str, args: dict):
         _stamp(command)
         return {
             "action": "approve",
-            "message": f"Execute with root: {command[:80]}",
+            "message": f"sudo: {command[:80]}",
         }
     return None
 
