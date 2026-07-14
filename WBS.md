@@ -354,33 +354,46 @@ LLM → vip_sudo("xxx") → pre_tool_call → stamp → {"action":"approve"} →
 
 ---
 
-## 2026-07-14 — Git Push 保护
+## 2026-07-14 — Git Push 保护（终版）
 
-### 现状
+### 最终方案
 
-终端拦截所有 `git push` 操作（含 `--force`/`--delete`/tag），直接在 terminal 审批中弹卡：
+两路并行的审批方案，不造轮子，全部利用 Hermes 原生能力：
 
+| 命令 | 检测方式 | 审批 | 执行 |
+|------|---------|------|------|
+| `git push` | VIP `__init__.py` 注入 `DANGEROUS_PATTERNS` | Hermes 原生审批卡（`display_target=命令本身`） | terminal 直接执行 |
+| `sudo xxx` | VIP `guard.py` 的 `pre_tool_call` block | → LLM 换 `vip_sudo` → 审批卡（`description=sudo: xxx`） | daemon 提权执行 |
+
+### 注入方式
+
+`hermes-plugin/__init__.py` 的 `_inject_git_push_pattern()`：
+```python
+from tools.approval import DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED
+DANGEROUS_PATTERNS.append((r'(?:^|[;&|&(])\s*git\s+push\b', "git push (requires approval)"))
 ```
-terminal("git push origin main")
-  → guard 检测到 git push
-  → 弹出审批卡（rule_key: "vip:git"）
-  → 用户批准后，原命令直接执行（不走 daemon，不走 vip_sudo）
-```
 
-- 不需要 root 权限，不走 daemon
-- 不影响 `git clone`/`fetch`/`pull`/`checkout`
-- 独立的 `vip:git` rule_key，session/always 缓存与 sudo 审批互不干扰
+Hermes 原生检测路径的 `display_target` = 原始命令，所以卡上能看到完整命令，不像插件审批路径的硬编码 `<tool_name> (plugin approval rule)`。
+
+### 已知问题
+
+- Hermes Desktop 渲染层叠问题：DeepSeek 长思考时 streaming "思考中..." 文本可能覆盖审批卡 description 区域，属于上游问题
+- `sudo` 不能用注入方案，因为没有 TTY 输密码，必须走 daemon 提权
 
 ### 文件变更
 
 | 文件 | 变更 |
 |------|------|
-| `hermes-plugin/guard.py` | 加 `_is_git_push_operation()`；`check()` 中拦截 git push；`vip_sudo()` handler 中本地执行 |
+| `hermes-plugin/__init__.py` | 新增 `_inject_git_push_pattern()`；修复非 ASCII 字符语法错误 |
+| `hermes-plugin/guard.py` | git push 放行（由 Hermes 原生处理）；`vip_sudo` message 简化为 `sudo:`；保留 sudo block + stamp/verify/blocklist |
+| `tests/test_git_push_protection.py` | 新增（25 项验证） |
+| `tests/test_laozhuan_fixes.py` | 新增（SHA-256 stamp / loop JSON / ReDoS） |
 
 ### 后续规划
 
 | # | 议题 | 优先级 |
 |---|------|:-----:|
-| G1 | **PAT/Deploy Key 方案**：生成写专用密钥/PAT，锁进 daemon，从 GitHub/Gitee 移除 `id_ed25519` 写权限，实现物理层保护 | 🔵 待定 |
-| G2 | **`vip_git` 工具**：独立于 `vip_sudo` 的专属 git 审批工具，语义清晰，不走 daemon，支持更多 git 操作 | 🔵 待定 |
+| G1 | PAT/Deploy Key 方案：物理层保护 SSH 写权限 | 🔵 待定 |
+| G2 | `vip_git` 专用工具 | 🔵 待定 |
+| G3 | Desktop 审批卡渲染层叠问题（思考中覆盖 description） | 🔵 上游跟踪 |
 
