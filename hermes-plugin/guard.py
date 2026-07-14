@@ -13,6 +13,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import socket
 import struct
 import time
@@ -20,6 +21,63 @@ import time
 logger = logging.getLogger("hermes-vip.guard")
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
+BLOCKLIST_FILE = os.environ.get("VIP_BLOCKLIST_FILE", "/usr/local/etc/hermes-vip/blocklist.yaml")
+
+# ── vip_sudo 黑名单（操作级）──
+# 审批批准后，匹配的命令仍然被拒绝——防止高危操作即使是用户批准的。
+_BLOCKLIST_CACHE: tuple[float, list[tuple[re.Pattern, str]]] = (0, [])
+_BLOCKLIST_CACHE_TTL = 60
+
+_FALLBACK_BLOCKLIST: list[tuple[str, str]] = [
+    (r"\buseradd\b|\badduser\b", "创建新用户"),
+    (r"\bpasswd\b|\bchpasswd\b", "修改密码"),
+    (r"\busermod\b.*-G\s+.*\b(sudo|wheel)\b", "赋予用户 sudo 权限"),
+    (r"\bvisudo\b|/etc/sudoers", "编辑 sudoers 文件"),
+    (r"\brm\b\s+(?:-[rRfF]+\s+)*\S+/\s*$|rm\s+.*--no-preserve-root", "删除根目录"),
+    (r"\bmkfs\b|dd\s+.*of=/dev/", "格式化或覆写磁盘"),
+    (r"\bchmod\b\s+(?:-[a-zA-Z]+\s+)*[67]77\s+\S+|chmod\s+.*\+s\b", "全局提权或设置 SUID"),
+    (r"\bssh-keygen\b.*-f.*authorized|>>\s*\S*authorized_keys", "写入 SSH authorized_keys"),
+    (r"\bcrontab\b\s+-[^l]|^\s*@reboot\b", "编辑 crontab 或持久化任务"),
+    (r"\biptables\s+.*-F\b|\bufw\s+disable\b", "关闭防火墙"),
+]
+
+
+def _load_blocklist() -> list[tuple[re.Pattern, str]]:
+    global _BLOCKLIST_CACHE
+    now = time.time()
+    if now - _BLOCKLIST_CACHE[0] < _BLOCKLIST_CACHE_TTL:
+        return _BLOCKLIST_CACHE[1]
+    try:
+        import yaml
+    except ImportError:
+        return _BLOCKLIST_CACHE[1] if _BLOCKLIST_CACHE[1] else _compile_fallback()
+    patterns = []
+    try:
+        with open(BLOCKLIST_FILE) as f:
+            cfg = yaml.safe_load(f) or {}
+        for entry in cfg.get("blocked_patterns", []):
+            pat = entry.get("pattern", "")
+            label = entry.get("label", pat)
+            if pat:
+                patterns.append((re.compile(pat, re.IGNORECASE), label))
+        if not patterns:
+            raise ValueError("empty blocklist")
+    except Exception:
+        logger.warning("blocklist load failed, using fallback")
+        patterns = _compile_fallback()
+    _BLOCKLIST_CACHE = (now, patterns)
+    return patterns
+
+
+def _compile_fallback() -> list[tuple[re.Pattern, str]]:
+    return [(re.compile(pat, re.IGNORECASE), label) for pat, label in _FALLBACK_BLOCKLIST]
+
+
+def _check_blocklist(command: str) -> tuple[bool, str]:
+    for pat, label in _load_blocklist():
+        if pat.search(command):
+            return True, label
+    return False, ""
 
 # ── Defense-in-depth: commands must be stamped by check() before execution ──
 # check() stores a stamp → handler verifies it → handler clears it.
@@ -77,6 +135,23 @@ def vip_sudo(command: str, reason: str = "") -> str:
     if not _verify(command):
         return json.dumps({
             "error": "REJECTED: command was not approved through the privilege gate",
+            "exit_code": -1,
+        })
+
+    # ── 操作级黑名单 ──
+    # 即使用户批准了，高危操作也被拒绝（需要手动执行）
+    blocked, label = _check_blocklist(command)
+    if blocked:
+        logger.warning(
+            "BLOCKED dangerous command (rule=%s): %s", label, command[:120],
+        )
+        return json.dumps({
+            "error": (
+                f"BLOCKED: {label}\n\n"
+                f"This operation is blocked by VIP security policy.\n\n"
+                f"Execute manually:\n  {command}\n\n"
+                f"To allow: edit {BLOCKLIST_FILE}"
+            ),
             "exit_code": -1,
         })
 
