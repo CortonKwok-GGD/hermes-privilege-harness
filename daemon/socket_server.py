@@ -19,6 +19,9 @@ Socket Server — Unix socket 服务
   4. 即使暴力猜 req_id，2^48 穷举不可行
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
@@ -65,6 +68,7 @@ MSG_REGISTER = "register"
 MSG_LIST_PENDING = "list_pending"
 MSG_GET_RESULT = "get_result"
 MSG_SUDO_EXECUTE = "sudo_execute"
+MSG_STAMP_INIT = "stamp_init"
 
 # ── 结果缓存 ──
 # req_id -> execution result (last 20 results kept)
@@ -226,6 +230,7 @@ class SocketServer:
         self._queue = queue
         self._executor = executor
         self._config = config or {}
+        self._stamp_secret: bytes = b""  # defense-in-depth stamp secret
         self._running = False
         self._request_server: Optional[socket.socket] = None
         self._control_server: Optional[socket.socket] = None
@@ -344,7 +349,9 @@ class SocketServer:
             req = _recv_json(client)
             req_type = req.get("type")
 
-            if req_type == MSG_SUDO_REQUEST:
+            if req_type == MSG_STAMP_INIT:
+                self._handle_stamp_init(client, req)
+            elif req_type == MSG_SUDO_REQUEST:
                 self._handle_sudo_request(client, req)
             elif req_type == MSG_SUDO_EXECUTE:
                 self._handle_sudo_execute(client, req)
@@ -361,6 +368,23 @@ class SocketServer:
             except OSError:
                 pass
 
+    def _handle_stamp_init(self, client: socket.socket, req: dict):
+        """Register stamp secret from plugin for defense-in-depth verification."""
+        secret_b64 = req.get("secret", "")
+        if not secret_b64:
+            _send_json(client, {"status": "error", "error": "secret required"})
+            return
+        try:
+            secret = base64.b64decode(secret_b64)
+        except Exception:
+            _send_json(client, {"status": "error", "error": "invalid base64"})
+            return
+        if len(secret) < 16:
+            _send_json(client, {"status": "error", "error": "secret too short"})
+            return
+        self._stamp_secret = secret
+        logger.info("stamp secret registered (%d bytes)", len(secret))
+        _send_json(client, {"status": "ok"})
     def _handle_sudo_request(self, client: socket.socket, req: dict):
         """处理一条 sudo 请求：入队列→等待审批→执行→返回结果"""
         command = req.get("command", "")
@@ -422,10 +446,11 @@ class SocketServer:
         _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
 
     def _handle_sudo_execute(self, client: socket.socket, req: dict):
-        """处理直接执行请求（用户已通过原生卡片批准，跳过审批队列）"""
+        """Handle direct execution with defense-in-depth stamp verification."""
         command = req.get("command", "")
-        reason = req.get("reason", "直接执行")
+        reason = req.get("reason", "direct execution")
         origin = req.get("origin", {})
+        stamp = req.get("stamp", "")
 
         if not isinstance(origin, dict):
             origin = {"channel": "vip_sudo"}
@@ -433,10 +458,24 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "command required"})
             return
 
-        logger.info("sudo_execute command=%s reason=%s", command[:60], reason[:30])
+        if not self._stamp_secret:
+            _send_json(client, {"status": "error",
+                "error": "REJECTED: no stamp secret registered"})
+            logger.warning("sudo_execute REJECTED: no stamp secret")
+            return
+
+        expected = hmac.new(
+            self._stamp_secret, command.encode(), hashlib.sha256,
+        ).hexdigest()
+        if not hmac.compare_digest(stamp, expected):
+            _send_json(client, {"status": "error",
+                "error": "REJECTED: invalid stamp"})
+            logger.warning("sudo_execute REJECTED: stamp mismatch cmd=%s", command[:60])
+            return
+
+        logger.info("sudo_execute cmd=%s reason=%s stamp=OK", command[:60], reason[:30])
         audit.request("direct", command, origin.get("channel", "vip_sudo"))
 
-        # 直接执行，跳过审批
         exec_result = self._executor.execute(command)
 
         _send_json(client, {"status": "approved", "result": exec_result})

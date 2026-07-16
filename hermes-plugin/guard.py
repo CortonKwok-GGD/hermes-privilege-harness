@@ -11,7 +11,9 @@ Defense-in-depth: handler 入口必须验章（stamp/verify），
 即使 Hermes backend 因任何原因绕过审批卡，handler 自己拒绝未盖章的命令。
 """
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -63,32 +65,48 @@ def _has_privilege_escalation(command: str) -> bool:
     return False
 
 
-# ── Stamp 验证（defense-in-depth）──
-# check() 盖章 → handler 验章 → handler 消章。
-# 直接调 vip_sudo handler（绕过审批卡）会被拒绝。
-_STAMP_TTL = 15  # handler 在审批批准后立刻执行，15s 够宽裕
-_stamps: dict[str, float] = {}
+# ── Stamp 验证（defense-in-depth v2: daemon-level HMAC）──
+# Plugin 生成随机 secret，通过 stamp_init 注册到 daemon。
+# 每个 sudo_execute 携带 HMAC-SHA256(command, secret) 作为 stamp。
+# Daemon 验 HMAC 后才执行——LLM 即使直写 socket 也无法伪造 stamp。
+_stamp_secret: bytes = os.urandom(32)
+_stamps: dict[str, str] = {}  # command[:120] → HMAC hex digest
+
+
+def _register_stamp_secret():
+    """Register stamp secret with daemon. Called once at plugin init."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(REQUEST_SOCK)
+        req = json.dumps({
+            "type": "stamp_init",
+            "secret": base64.b64encode(_stamp_secret).decode(),
+        }).encode()
+        s.sendall(struct.pack("!I", len(req)) + req)
+        raw = s.recv(4)
+        if raw and len(raw) == 4:
+            mlen = struct.unpack("!I", raw)[0]
+            data = s.recv(mlen)
+            resp = json.loads(data.decode())
+            if resp.get("status") == "ok":
+                logger.info("stamp secret registered with daemon")
+    except Exception as exc:
+        logger.warning("failed to register stamp secret: %s", exc)
+    finally:
+        s.close()
 
 
 def _stamp(command: str):
-    """Mark a command as having passed through the approval gate."""
-    key = hashlib.sha256(command.encode()).hexdigest()
-    _stamps[key] = time.time()
-    now = time.time()
-    for k in list(_stamps):
-        if now - _stamps[k] > _STAMP_TTL * 2:
-            del _stamps[k]
+    """Compute HMAC stamp for the command."""
+    key = command[:120]
+    _stamps[key] = hmac.new(_stamp_secret, command.encode(), hashlib.sha256).hexdigest()
 
 
 def _verify(command: str) -> bool:
     """Verify the command was stamped by check(). Returns True and clears stamp."""
-    key = hashlib.sha256(command.encode()).hexdigest()
-    ts = _stamps.pop(key, None)
-    if ts is None:
-        return False
-    if time.time() - ts > _STAMP_TTL:
-        return False
-    return True
+    key = command[:120]
+    return _stamps.pop(key, None) is not None
 
 
 # ── 防循环 ──
@@ -325,11 +343,13 @@ def vip_sudo(command: str, reason: str = "") -> str:
         logger.error("daemon unreachable: %s", exc)
         return json.dumps({"error": "VIP daemon not running", "exit_code": -1})
 
+    stamp = _stamps.pop(command[:120], "")
     req = {
         "type": "sudo_execute",
         "command": command,
         "reason": reason or "提权请求",
         "origin": {"channel": "vip_sudo", "timestamp": time.time()},
+        "stamp": stamp,
     }
     payload = json.dumps(req).encode()
 

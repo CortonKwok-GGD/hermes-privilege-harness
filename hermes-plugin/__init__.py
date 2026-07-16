@@ -95,6 +95,7 @@ def register(ctx):
 
     # ── 4. pre_llm_call：告诉 LLM 唯一提权路径 ──
     ctx.register_hook("pre_llm_call", _inject)
+    guard._register_stamp_secret()
     logger.info("hermes-vip plugin ready")
 
 
