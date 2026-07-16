@@ -70,7 +70,8 @@ def _has_privilege_escalation(command: str) -> bool:
 # 每个 sudo_execute 携带 HMAC-SHA256(command, secret) 作为 stamp。
 # Daemon 验 HMAC 后才执行——LLM 即使直写 socket 也无法伪造 stamp。
 _stamp_secret: bytes = os.urandom(32)
-_stamps: dict[str, str] = {}  # command[:120] → HMAC hex digest
+_stamps: dict[str, str] = {}
+_nonce: str = ""  # command[:120] → HMAC hex digest
 
 
 def _register_stamp_secret():
@@ -90,7 +91,9 @@ def _register_stamp_secret():
             data = s.recv(mlen)
             resp = json.loads(data.decode())
             if resp.get("status") == "ok":
-                logger.info("stamp secret registered with daemon")
+                global _nonce
+                _nonce = resp.get("nonce", "")
+                logger.info("stamp secret registered nonce=%s", _nonce[:8])
     except Exception as exc:
         logger.warning("failed to register stamp secret: %s", exc)
     finally:
@@ -106,7 +109,7 @@ def _stamp(command: str):
 def _verify(command: str) -> bool:
     """Verify the command was stamped by check(). Returns True and clears stamp."""
     key = command[:120]
-    return _stamps.pop(key, None) is not None
+    return key in _stamps
 
 
 # ── 防循环 ──
@@ -350,6 +353,7 @@ def vip_sudo(command: str, reason: str = "") -> str:
         "reason": reason or "提权请求",
         "origin": {"channel": "vip_sudo", "timestamp": time.time()},
         "stamp": stamp,
+        "nonce": _nonce,
     }
     payload = json.dumps(req).encode()
 
