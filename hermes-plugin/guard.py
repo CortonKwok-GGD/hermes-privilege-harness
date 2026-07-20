@@ -232,17 +232,16 @@ def check(tool_name: str, args: dict, **kw) -> dict | None:
             if vs_on:
                 return {"action": "block", "message": _sudo_block_message()}
             return None  # system sudo
-        wrapped = sandbox.build_bwrap_cmd(cmd)
+        wrapped = sandbox.build_sandbox_cmd(cmd)
         if wrapped != cmd:
             args["command"] = wrapped
         return None
 
     if tool_name == "execute_code":
         code = args.get("code", "")
-        # Wrap python execution in bwrap
-        bwrap_path = sandbox._get_bwrap_path()
-        if bwrap_path and code:
-            wrapped_cmd = sandbox.build_bwrap_cmd(f"python3 -c {shlex.quote(code)}")
+        # Wrap python execution in sandbox
+        if sandbox.sandbox_available() and code:
+            wrapped_cmd = sandbox.build_sandbox_cmd(f"python3 -c {shlex.quote(code)}")
             args["code"] = f"""import subprocess
 result = subprocess.run({shlex.quote(wrapped_cmd)}, shell=True, capture_output=True, text=True, timeout=60)
 print(result.stdout or result.stderr)
