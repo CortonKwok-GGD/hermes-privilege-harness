@@ -265,35 +265,37 @@ else
 fi
 
 echo ""
-# ── 9. Workspace .git 权限（Docker 终端兼容）──
-# Hermes Docker 后台以 _hermes 用户运行，需能读写 workspace 下 git 仓库。
+
+# ── 9. Workspace 权限（Docker 终端兼容）──
+# Hermes Docker 后台以 _hermes 用户运行。把整个 workspace 设成共享组，
+# 确保能从 Docker 终端读写 git 仓库和代码文件。~/.hermes/ 不在此目录下，不受影响。
 echo ""
-echo "🔗 配置 workspace .git 共享..."
+echo "🔗 配置 workspace 共享组..."
 WS_GROUP="hermes-shared"
 
 if ! getent group "$WS_GROUP" &>/dev/null; then
-    groupadd -f "$WS_GROUP" 2>/dev/null || true
+    groupadd -f "$WS_GROUP" 2>/dev/null || pw groupadd "$WS_GROUP" 2>/dev/null || true
 fi
 
-usermod -a -G "$WS_GROUP" "$REAL_USER" 2>/dev/null || true
+usermod -a -G "$WS_GROUP" "$REAL_USER" 2>/dev/null || \
+    dseditgroup -o edit -a "$REAL_USER" -t user "$WS_GROUP" 2>/dev/null || true
+
 if id "_hermes" &>/dev/null; then
-    usermod -a -G "$WS_GROUP" _hermes 2>/dev/null || true
+    usermod -a -G "$WS_GROUP" _hermes 2>/dev/null || \
+        dseditgroup -o edit -a _hermes -t user "$WS_GROUP" 2>/dev/null || true
     SHARED_MSG="_hermes + $REAL_USER"
 else
-    SHARED_MSG="$REAL_USER（_hermes 不存在，跳过）"
+    SHARED_MSG="$REAL_USER（_hermes 不可用，Hermes Desktop 未安装）"
 fi
 
 WS_DIR="$REAL_HOME/hermes-workspace"
 if [ -d "$WS_DIR" ]; then
-    find "$WS_DIR" -name ".git" -type d -not -path "*/.hermes/*" 2>/dev/null | while read gd; do
-        chgrp -R "$WS_GROUP" "$gd" 2>/dev/null || true
-        chmod -R g+rwX "$gd" 2>/dev/null || true
-    done
-    echo "  ✅ workspace .git 权限已配置（$SHARED_MSG）"
+    chgrp -R "$WS_GROUP" "$WS_DIR" 2>/dev/null
+    chmod -R g+rwX "$WS_DIR" 2>/dev/null
+    echo "  ✅ workspace 权限已配置（$SHARED_MSG）"
 else
     echo "  ⏭  $WS_DIR 不存在，跳过"
 fi
-
 echo "┌─────────────────────────────────────────────┐"
 echo "│  ${GREEN}✅ Hermes VIP v8.0 安装完成${NC}                   │"
 echo "│                                             │"

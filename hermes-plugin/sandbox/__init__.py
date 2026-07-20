@@ -24,11 +24,6 @@ _CONFIG_PATH = os.environ.get(
     os.path.expanduser("~/.hermes/plugins/hermes-vip/config.yaml"),
 )
 
-_SB_PROFILE = os.environ.get(
-    "VIP_SB_PROFILE",
-    os.path.expanduser("~/.hermes/plugins/hermes-vip/hermes-vip.sb"),
-)
-
 
 # ── Platform detection ──
 
@@ -154,7 +149,7 @@ def build_sandbox_cmd(command: str) -> str:
         return sb._build_linux_cmd(command)
     elif IS_MACOS:
         from . import macos as sb
-        return sb._build_macos_cmd(command, network_enabled(), _SB_PROFILE)
+        return sb._build_macos_cmd(command, network_enabled())
     return command
 
 
