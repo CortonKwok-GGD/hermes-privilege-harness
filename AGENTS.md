@@ -144,6 +144,7 @@ Every test round includes attacker perspective: can LLM read SSH keys? Can it by
 | socket 路径 | `/run/hermes-vip/request.sock` | `/var/run/hermes-vip/request.sock` |
 | 安装脚本 | `examples/install-linux.sh` | `examples/install-macos.sh` |
 | 验证沙箱 | `ssh admin@10.0.0.3` | 本地 Desktop 开新对话 |
+| workspace 权限 | `admin:admin`（自然匹配） | `hermes-shared` 共享组（Docker _hermes 兼容） |
 
 ### 开发规则
 
