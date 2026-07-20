@@ -133,23 +133,37 @@ def _get_sandbox_mounts() -> list[tuple[str, str, str]]:
 
 
 def sandbox_available() -> bool:
-    """Check if the platform sandbox tool is available."""
-    if IS_LINUX:
-        from . import linux as sb
-        return sb._get_bwrap_path() is not None
-    elif IS_MACOS:
-        from . import macos as sb
-        return sb._get_sandbox_exec_path() is not None
+    """Check if _hermes user exists and sudo works."""
+    try:
+        r = subprocess.run(["id", "_hermes"], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            # Verify sudo works
+            r2 = subprocess.run(["sudo", "-u", "_hermes", "whoami"], capture_output=True, text=True, timeout=5)
+            return r2.returncode == 0 and "_hermes" in r2.stdout
+    except Exception:
+        pass
     return False
 
 
 def build_sandbox_cmd(command: str) -> str:
-    """Wrap a shell command in the platform-appropriate sandbox.
-    Returns original command unchanged if sandboxing is unavailable."""
+    """Wrap a shell command in _hermes user sandbox.
+    File isolation via _hermes user (both platforms).
+    Network isolation: Linux=iptables (system-wide), macOS=sandbox-exec (per-command)."""
     if IS_LINUX:
         from . import linux as sb
-        return sb._build_linux_cmd(command, _get_sandbox_mounts(), network_enabled())
+        return sb._build_linux_cmd(command)
     elif IS_MACOS:
         from . import macos as sb
-        return sb._build_macos_cmd(command, _get_sandbox_mounts(), network_enabled(), _SB_PROFILE)
+        return sb._build_macos_cmd(command, network_enabled(), _SB_PROFILE)
     return command
+
+
+def apply_network_state():
+    """Apply network state from config. Linux: iptables. macOS: no-op."""
+    net_on = network_enabled()
+    if IS_LINUX:
+        from . import linux as sb
+        sb.apply_network(net_on)
+    elif IS_MACOS:
+        from . import macos as sb
+        sb.apply_network(net_on)

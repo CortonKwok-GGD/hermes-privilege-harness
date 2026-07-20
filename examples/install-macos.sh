@@ -134,6 +134,24 @@ else
     echo "  ⏭  已存在"
 fi
 
+# ── 2b. _hermes sandbox sudoers ──
+echo ""
+echo "🔐 配置 _hermes sandbox sudoers..."
+SB_USER="_hermes"
+if id "$SB_USER" &>/dev/null; then
+    SB_S="/etc/sudoers.d/hermes-sandbox"
+    if [ ! -f "$SB_S" ]; then
+        echo "# _hermes sandbox user — NOPASSWD: only _hermes target, not root" > "$SB_S"
+        echo "$REAL_USER ALL=($SB_USER) NOPASSWD: ALL" >> "$SB_S"
+        chmod 440 "$SB_S"; chown root:wheel "$SB_S"
+        echo "  ✅ $REAL_USER → $SB_USER NOPASSWD"
+    else
+        echo "  ⏭  $SB_S 已存在"
+    fi
+else
+    echo "  ⏭  _hermes 用户不存在，跳过"
+fi
+
 # watchdog / 用户需要 sudo -u _hermesvip 启动 daemon
 D="/etc/sudoers.d/hermes-vipd-launch"
 if [ ! -f "$D" ]; then

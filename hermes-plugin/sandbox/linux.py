@@ -1,64 +1,62 @@
 """
-Linux sandbox — bwrap implementation for Hermes VIP v8.0
+Linux sandbox — _hermes user isolation for Hermes VIP v8.0
 
-Uses bubblewrap to create a mount-namespace isolated sandbox.
+File isolation via dedicated _hermes user + ACL.
+Network isolation via iptables -m owner (system-wide, no per-command wrapping).
 """
 
 import logging
-import os
+import re
 import shlex
 import subprocess
 
 logger = logging.getLogger("hermes-vip.sandbox.linux")
 
+_HERMES_USER = "_hermes"
+_HERMES_UID = None
 
-def _get_bwrap_path():
+
+def _get_hermes_uid() -> int:
+    global _HERMES_UID
+    if _HERMES_UID is not None:
+        return _HERMES_UID
     try:
-        r = subprocess.run(["which", "bwrap"], capture_output=True, text=True, timeout=5)
-        if r.returncode == 0 and r.stdout.strip():
-            return r.stdout.strip()
+        r = subprocess.run(["id", "-u", _HERMES_USER], capture_output=True, text=True, timeout=5)
+        if r.returncode == 0:
+            _HERMES_UID = int(r.stdout.strip())
     except Exception:
-        pass
-    return None
+        _HERMES_UID = 0
+    return _HERMES_UID or 0
 
 
-# ── bwrap base arguments ──
-# System directories required for any command to run inside bwrap.
-
-_BWRAP_BASE = [
-    "--ro-bind", "/usr", "/usr",
-    "--ro-bind", "/lib", "/lib",
-    "--ro-bind", "/lib64", "/lib64",
-    "--ro-bind", "/etc/passwd", "/etc/passwd",
-    "--ro-bind", "/etc/group", "/etc/group",
-    "--ro-bind", "/etc/resolv.conf", "/etc/resolv.conf",
-    "--ro-bind", "/etc/ssl", "/etc/ssl",
-    "--ro-bind", "/etc/ca-certificates", "/etc/ca-certificates",
-    "--tmpfs", "/home",
-    "--tmpfs", "/root",
-    "--tmpfs", "/var",
-    "--proc", "/proc",
-    "--dev", "/dev",
-    "--unshare-pid",
-    "--cap-drop", "ALL",
-    "--setenv", "SANDBOXED", "1",
-    # /bin is a symlink to usr/bin on modern Ubuntu — recreate inside bwrap
-    "--symlink", "usr/bin", "/bin",
-    "--symlink", "usr/lib", "/lib",
-    "--symlink", "usr/lib64", "/lib64",
-]
+def _build_linux_cmd(command: str) -> str:
+    """Wrap command as _hermes user for file isolation.
+    Uses bash -c with proper quoting to prevent shell breakout."""
+    return f"sudo -u {_HERMES_USER} bash -c {shlex.quote(command)}"
 
 
-def _build_linux_cmd(command: str, mounts: list, net_on: bool) -> str:
-    """Wrap command in bwrap sandbox. Returns original if bwrap unavailable."""
-    bwrap_path = _get_bwrap_path()
-    if not bwrap_path:
-        return command
+def apply_network(net_on: bool):
+    """Apply iptables rule based on network state.
+    net_on=True:  remove block rule (allow network)
+    net_on=False: add block rule (block network)"""
+    uid = _get_hermes_uid()
+    if uid <= 0:
+        return
 
-    args = [bwrap_path] + _BWRAP_BASE
-    if not net_on:
-        args.append("--unshare-net")
-    for flag, src, dst in mounts:
-        args.extend([flag, src, dst])
-    args.extend(["--", "/usr/bin/bash", "-c", command])
-    return " ".join(shlex.quote(a) for a in args)
+    rule = ["OUTPUT", "-m", "owner", "--uid-owner", str(uid), "-j", "DROP"]
+
+    if net_on:
+        # Remove block rule
+        subprocess.run(["sudo", "iptables", "-D"] + rule,
+                       capture_output=True, timeout=10)
+        logger.info("iptables: removed block rule for uid %s", uid)
+    else:
+        # Check if rule already exists
+        r = subprocess.run(["sudo", "iptables", "-C"] + rule,
+                           capture_output=True, timeout=10)
+        if r.returncode != 0:
+            subprocess.run(["sudo", "iptables", "-A"] + rule,
+                           capture_output=True, timeout=10)
+            logger.info("iptables: added block rule for uid %s", uid)
+        else:
+            logger.info("iptables: block rule already exists for uid %s", uid)

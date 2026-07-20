@@ -110,6 +110,30 @@ else
     echo "  ⏭  已存在"
 fi
 
+# ── 2b. _hermes sandbox 用户 sudoers ──
+echo ""
+echo "🔐 配置 _hermes sandbox sudoers..."
+SB_USER="_hermes"
+if id "$SB_USER" &>/dev/null; then
+    SB_S="/etc/sudoers.d/hermes-sandbox"
+    if [ ! -f "$SB_S" ]; then
+        echo "# _hermes sandbox user — NOPASSWD: only _hermes target, not root" > "$SB_S"
+        echo "$REAL_USER ALL=($SB_USER) NOPASSWD: ALL" >> "$SB_S"
+        chmod 440 "$SB_S"
+        echo "  ✅ $REAL_USER → $SB_USER NOPASSWD"
+    else
+        echo "  ⏭  $SB_S 已存在"
+    fi
+    # iptables 规则开机自启
+    SB_UID=$(id -u "$SB_USER")
+    if command -v iptables &>/dev/null; then
+        iptables-save 2>/dev/null | grep -q "uid.*$SB_UID" || \
+            echo "  ⚠️  需手动添加 iptables 规则: iptables -A OUTPUT -m owner --uid-owner $SB_UID -j DROP"
+    fi
+else
+    echo "  ⏭  _hermes 用户不存在，跳过"
+fi
+
 # ── 3. Socket 访问 ──
 echo ""
 echo "🔗 配置 socket 访问..."

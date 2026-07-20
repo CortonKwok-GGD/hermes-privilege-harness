@@ -70,7 +70,9 @@ def register(ctx):
 
     # ── pre_llm_call: tell LLM about sandbox ──
     ctx.register_hook("pre_llm_call", _inject)
-    logger.info("hermes-vip plugin ready")
+    logger.info("hermes-vip plugin registered")
+    # Apply network state from config on session start
+    sandbox.apply_network_state()
 
 
 def _register_vip_sudo(ctx):
@@ -160,26 +162,30 @@ def _handle_vipsandbox(args: str) -> str:
     # /vipsandbox net on|off
     if args.startswith("net "):
         sub = args[4:].strip()
-        status = "on" if sandbox.network_enabled() else "off"
         if sub == "on":
             sandbox.set_network_enabled(True)
-            return "Sandbox network enabled. Will take effect on next chat."
+            sandbox.apply_network_state()
+            return "Sandbox network enabled. Applied now."
         elif sub == "off":
             sandbox.set_network_enabled(False)
-            return "Sandbox network disabled. Will take effect on next chat."
+            sandbox.apply_network_state()
+            return "Sandbox network disabled. Applied now."
         else:
-            return f"Sandbox network: {status}. Use /vipsandbox net on|off to toggle."
+            net = "on" if sandbox.network_enabled() else "off"
+            return f"Sandbox network: {net}. Use /vipsandbox net on|off to toggle."
     # /vipsandbox on|off
-    status = "on" if sandbox.sandbox_enabled() else "off"
     if args == "on":
         sandbox.set_sandbox_enabled(True)
-        return "Sandbox enabled. Will take effect on next chat."
+        sandbox.apply_network_state()
+        return "Sandbox enabled. Applied now."
     elif args == "off":
         sandbox.set_sandbox_enabled(False)
-        return "Sandbox disabled. Will take effect on next chat."
+        return "Sandbox disabled. Applied now."
     else:
+        sb = "on" if sandbox.sandbox_enabled() else "off"
         net = "on" if sandbox.network_enabled() else "off"
-        return f"Sandbox: {status}, network: {net}. Use /vipsandbox on|off or /vipsandbox net on|off."
+        vs = "on" if sandbox.vip_sudo_enabled() else "off"
+        return f"Sandbox: {sb}, network: {net}, vip_sudo: {vs}"
 
 
 def _handle_vipsudo(args: str) -> str:
@@ -187,10 +193,10 @@ def _handle_vipsudo(args: str) -> str:
     status = "on" if sandbox.vip_sudo_enabled() else "off"
     if args == "on":
         sandbox.set_vip_sudo_enabled(True)
-        return "vip_sudo enabled. Will take effect on next chat."
+        return "vip_sudo enabled. Applied now."
     elif args == "off":
         sandbox.set_vip_sudo_enabled(False)
-        return "vip_sudo disabled. Will take effect on next chat."
+        return "vip_sudo disabled. Applied now."
     else:
         return f"vip_sudo: {status}. Use /vipsudo on|off to toggle."
 
