@@ -166,12 +166,12 @@ def _handle_vipsandbox(args: str) -> str:
         if sub == "on":
             sandbox.set_network_enabled(True)
             sandbox.apply_network_state()
-    sandbox.apply_mount_permissions()
+            sandbox.apply_mount_permissions()
             return "Sandbox network enabled. Applied now."
         elif sub == "off":
             sandbox.set_network_enabled(False)
             sandbox.apply_network_state()
-    sandbox.apply_mount_permissions()
+            sandbox.apply_mount_permissions()
             return "Sandbox network disabled. Applied now."
         else:
             net = "on" if sandbox.network_enabled() else "off"
@@ -180,7 +180,7 @@ def _handle_vipsandbox(args: str) -> str:
     if args == "on":
         sandbox.set_sandbox_enabled(True)
         sandbox.apply_network_state()
-    sandbox.apply_mount_permissions()
+        sandbox.apply_mount_permissions()
         return "Sandbox enabled. Applied now."
     elif args == "off":
         sandbox.set_sandbox_enabled(False)
@@ -206,13 +206,19 @@ def _handle_vipsudo(args: str) -> str:
 
 
 def _handle_vipdaemon(_args: str = "") -> str:
-    """Show daemon status (read-only)."""
+    """Show daemon status (read-only). macOS=launchctl, Linux=systemctl."""
     try:
-        result = subprocess.run(
-            ["systemctl", "is-active", "hermes-vipd"],
-            capture_output=True, text=True, timeout=5,
-        )
-        status = result.stdout.strip()
+        if sys.platform == "darwin":
+            r = subprocess.run(
+                ["launchctl", "list"], capture_output=True, text=True, timeout=5,
+            )
+            status = "active" if "hermes-vip" in r.stdout else "not loaded"
+        else:
+            r = subprocess.run(
+                ["systemctl", "is-active", "hermes-vipd"],
+                capture_output=True, text=True, timeout=5,
+            )
+            status = r.stdout.strip()
     except Exception:
         status = "unknown"
     return (
