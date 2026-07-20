@@ -4,9 +4,15 @@
 
 blocked_patterns:
   # ── 用户管理 ──
-  - pattern: '\buseradd\b|\badduser\b|dscl\s+.*\s+-create\s+/Users/'
+  - pattern: '\\buseradd\\b|\\badduser\\b|dscl\\s+.*\\s+-create\\s+/Users/'
     label: 创建新用户
-  - pattern: '\bpasswd\b|\bchpasswd\b|dscl\s+.*\s+-passwd'
+  - pattern: '\\bdscl\\s+.*\\s+PrimaryGroupID\\b'
+    label: macOS 分配用户到特权组
+  - pattern: '\\bgroupadd\\b|\\baddgroup\\b|dscl\\s+.*\\s+-create\\s+/Groups/'
+    label: 创建新用户组
+  - pattern: '\\bgpasswd\\b|\\bgroupmod\\b|dscl\\s+.*\\s+-merge\\s+/Groups/'
+    label: 修改用户组
+  - pattern: '\\bpasswd\\b|\\bchpasswd\\b|dscl\\s+.*\\s+-passwd'
     label: 修改密码
   - pattern: '\busermod\b.*-G\s+.*\b(sudo|wheel)\b|usermod\b.*-a\s+.*\b(sudo|wheel)\b'
     label: 赋予用户 sudo 权限
