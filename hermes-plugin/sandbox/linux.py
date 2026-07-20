@@ -30,11 +30,7 @@ def _get_hermes_uid() -> int:
 
 
 def _build_linux_cmd(command: str) -> str:
-    """Wrap command as _hermes user for file isolation.
-    Uses bash -c with proper quoting to prevent shell breakout."""
-    return f"sudo -u {_HERMES_USER} bash -c {shlex.quote(command)}"
-
-
+    return "/usr/local/bin/hermes-run " + shlex.quote(command)
 def apply_network(net_on: bool):
     """Apply iptables rule based on network state.
     net_on=True:  remove block rule (allow network)
