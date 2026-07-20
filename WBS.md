@@ -545,3 +545,15 @@ file 属组 `staff`(gid=20) vs `_hermes` 在 `admin`(gid=80)。
 - `~/.hermes/` 不在 workspace 下，天然不受影响
 
 只涉及安装脚本，不影响运行时权限模型。
+
+## 2026-07-21 — 沙箱网络隔离加固 + hermes-run 统一包装
+
+### 修复
+
+| 文件 | 变更 |
+|------|------|
+| sandbox/macos.py | _build_macos_cmd 改用 hermes-run（无 sudo 关键词） |
+| sandbox/linux.py | _build_linux_cmd 改用 hermes-run |
+| guard.py | cronjob 移出放行白名单 |
+| examples/install-macos.sh | 写入 command_allowlist |
+| examples/install-linux.sh | 同上 |

@@ -152,3 +152,10 @@ Every test round includes attacker perspective: can LLM read SSH keys? Can it by
 - **macOS 上开发非沙箱功能**：guard 逻辑、slash command、config 读写可在本地直接测
 - **跨平台改动**：同时部署沙箱验证 Linux + 本地验证 macOS 不崩
 - **不要在一个平台上写死另一个平台的逻辑**：用 `sys.platform` 或 `shutil.which("bwrap")` 做运行时检测
+
+
+## v8.1 工具分类更新
+
+子进程 → hermes-run 包装（terminal, execute_code）
+放行白名单 → cronjob 移除（网络绕过风险）
+未知工具 → block → Use vip_sudo
