@@ -73,6 +73,7 @@ def register(ctx):
     logger.info("hermes-vip plugin registered")
     # Apply network state from config on session start
     sandbox.apply_network_state()
+    sandbox.apply_mount_permissions()
 
 
 def _register_vip_sudo(ctx):
@@ -165,10 +166,12 @@ def _handle_vipsandbox(args: str) -> str:
         if sub == "on":
             sandbox.set_network_enabled(True)
             sandbox.apply_network_state()
+    sandbox.apply_mount_permissions()
             return "Sandbox network enabled. Applied now."
         elif sub == "off":
             sandbox.set_network_enabled(False)
             sandbox.apply_network_state()
+    sandbox.apply_mount_permissions()
             return "Sandbox network disabled. Applied now."
         else:
             net = "on" if sandbox.network_enabled() else "off"
@@ -177,6 +180,7 @@ def _handle_vipsandbox(args: str) -> str:
     if args == "on":
         sandbox.set_sandbox_enabled(True)
         sandbox.apply_network_state()
+    sandbox.apply_mount_permissions()
         return "Sandbox enabled. Applied now."
     elif args == "off":
         sandbox.set_sandbox_enabled(False)

@@ -153,6 +153,23 @@ def build_sandbox_cmd(command: str) -> str:
     return command
 
 
+def apply_mount_permissions():
+    """Apply filesystem ACLs from config.yaml sandbox.mounts for _hermes user.
+    Clears stale ACLs on listed paths, sets read/write per writable flag.
+    Paths not in the mount list are not touched."""
+    mounts = _get_sandbox_mounts()
+    if not mounts:
+        logger.debug("no sandbox mounts configured, skipping ACL setup")
+        return
+    if IS_MACOS:
+        from . import macos as sb
+        sb.apply_mount_acls(mounts)
+    elif IS_LINUX:
+        from . import linux as sb
+        sb.apply_mount_acls(mounts)
+    logger.info("mount ACLs applied: %d paths", len(mounts))
+
+
 def apply_network_state():
     """Apply network state from config. Linux: iptables. macOS: no-op."""
     net_on = network_enabled()
