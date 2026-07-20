@@ -296,9 +296,11 @@ fi
 
 echo ""
 echo "┌─────────────────────────────────────────────┐"
-echo "│  ${GREEN}✅ Hermes VIP v3.0 安装完成${NC}                   │"
+echo "│  ${GREEN}✅ Hermes VIP v8.0 安装完成${NC}                  │"
 echo "│                                             │"
-echo "│  Login Item: hermes-vipd（重启自动启动）       │"
+echo "│  ⚠️  沙箱功能 (bwrap) 当前仅 Linux              │"
+echo "│  macOS sandbox-exec 支持待实现                 │"
+echo "│  自启动: Login Items（重启自动启动）             │"
 echo "│  日志: tail /tmp/hermes-vipd-watchdog.log    │"
 echo "│  daemon 日志: tail $VIP_LOG/vipd.log         │"
 echo "│  重启 Hermes Desktop 使 Plugin 生效          │"

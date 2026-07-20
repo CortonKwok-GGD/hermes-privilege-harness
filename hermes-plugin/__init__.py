@@ -1,29 +1,29 @@
-"""Hermes VIP plugin - native approval + daemon + git push injection"""
+"""Hermes VIP plugin — sandbox isolation + privilege gate v8.0"""
 
 import logging
 import re
+import subprocess
 from . import guard
+from . import sandbox
 
 logger = logging.getLogger("hermes-vip.plugin")
 
 
 def _inject_git_push_pattern():
-    """Inject git push into Hermes native dangerous-pattern detection."""
     try:
         from tools.approval import DANGEROUS_PATTERNS, DANGEROUS_PATTERNS_COMPILED
-        pattern = (r'(?:^|[;&|&(])\s*git\s+push\b', "git push (requires approval)")
+        pattern = (r'(?:^|[;&|&(])\\s*git\\s+push\\b', "git push (requires approval)")
         if pattern not in DANGEROUS_PATTERNS:
             DANGEROUS_PATTERNS.append(pattern)
             DANGEROUS_PATTERNS_COMPILED.append(
                 (re.compile(pattern[0], re.IGNORECASE), pattern[1])
             )
-            logger.info("injected git push into Hermes DANGEROUS_PATTERNS")
+            logger.info("injected git push into DANGEROUS_PATTERNS")
     except Exception as e:
         logger.warning("failed to inject git push pattern: %s", e)
 
 
 def _patch_approval_display():
-    """Monkey-patch _run_approval_gate 让 vip_sudo 的卡标题显示真实命令。"""
     try:
         from tools.approval import _run_approval_gate as _original
         import functools
@@ -32,11 +32,7 @@ def _patch_approval_display():
         def _patched(*, display_target, description, **kw):
             if description and description.startswith("sudo:"):
                 display_target = description
-            return _original(
-                display_target=display_target,
-                description=description,
-                **kw,
-            )
+            return _original(display_target=display_target, description=description, **kw)
 
         import tools.approval
         tools.approval._run_approval_gate = _patched
@@ -46,20 +42,51 @@ def _patch_approval_display():
 
 
 def register(ctx):
-    # ── 0. 注入 git push + 修补审批卡显示 ──
     _inject_git_push_pattern()
     _patch_approval_display()
 
-    # ── 1. pre_tool_call：拦截 sudo + 触发原生审批卡片 ──
+    # ── pre_tool_call hook ──
     ctx.register_hook("pre_tool_call", _hook)
 
-    # ── 2. vip_sudo：唯一提权工具 ──
+    # ── vip_sudo tool (conditional on config) ──
+    _register_vip_sudo(ctx)
+
+    # ── Slash commands ──
+    ctx.register_command(
+        name="vipsandbox",
+        handler=lambda _args="": _handle_vipsandbox(_args),
+        description="Toggle sandbox on/off, net on/off, or show status",
+    )
+    ctx.register_command(
+        name="vipsudo",
+        handler=lambda _args="": _handle_vipsudo(_args),
+        description="Toggle vip_sudo on/off or show status",
+    )
+    ctx.register_command(
+        name="vipdaemon",
+        handler=lambda _args="": _handle_vipdaemon(_args),
+        description="Show VIP daemon status",
+    )
+
+    # ── pre_llm_call: tell LLM about sandbox ──
+    ctx.register_hook("pre_llm_call", _inject)
+    logger.info("hermes-vip plugin ready")
+
+
+def _register_vip_sudo(ctx):
+    """Register vip_sudo tool if enabled in config."""
+    if not sandbox.vip_sudo_enabled():
+        logger.info("vip_sudo disabled by config — tool not registered")
+        return
+
     ctx.register_tool(
         name="vip_sudo",
         toolset="terminal",
         description=(
             "Execute privileged commands that require root access. "
-            "This is the ONLY way to run commands with sudo/root privileges. "
+            "Also use to access files/directories outside the sandbox boundary. "
+            "This is the ONLY way to run commands with sudo/root privileges "
+            "and the ONLY way to read files outside the sandbox. "
             "After user approval, executes through a secure daemon."
         ),
         schema={
@@ -73,7 +100,7 @@ def register(ctx):
                     },
                     "reason": {
                         "type": "string",
-                        "description": "Why this command needs root privileges",
+                        "description": "Why this command needs to escape the sandbox",
                     },
                 },
                 "required": ["command"],
@@ -85,57 +112,102 @@ def register(ctx):
         ),
         is_async=False,
     )
-
-    # ── 3. Slash commands ──
-    ctx.register_command(
-        name="vip-pending",
-        handler=lambda _args="": _handle_pending(),
-        description="List pending privilege requests",
-    )
-
-    # ── 4. pre_llm_call：告诉 LLM 唯一提权路径 ──
-    ctx.register_hook("pre_llm_call", _inject)
-    guard._register_stamp_secret()
-    logger.info("hermes-vip plugin ready")
+    logger.info("vip_sudo tool registered")
 
 
 def _hook(tool_name, args, **kwargs):
-    """pre_tool_call: block sudo -> vip_sudo; vip_sudo -> native approval"""
+    """pre_tool_call: delegate to guard.check()"""
     return guard.check(tool_name, args if isinstance(args, dict) else {})
 
 
 def _inject(**kwargs):
     if kwargs.get("is_first_turn"):
-        return {
-            "context": (
-                "[SYSTEM]: Sudo is NOT available via the terminal tool. "
-                "For privileged commands, use vip_sudo. "
-                "You will be prompted for approval."
+        sb_on = sandbox.sandbox_enabled()
+        vs_on = sandbox.vip_sudo_enabled()
+        net_on = sandbox.network_enabled()
+        if sb_on and vs_on:
+            msg = (
+                "[SYSTEM]: You are in a sandbox (bwrap). "
+                "Terminal handles files, network, scripts — no approval needed. "
+                "vip_sudo is the only tool that requires approval."
             )
-        }
+            if not net_on:
+                msg += " Network is isolated. Ask user for /vipsandbox net on if needed."
+        elif sb_on and not vs_on:
+            msg = (
+                "[SYSTEM]: You are in a sandbox (bwrap). "
+                "Terminal handles files, network, scripts — no approval needed. "
+                "vip_sudo is disabled — ask user for /vipsudo on if needed."
+            )
+        elif not sb_on and vs_on:
+            msg = (
+                "[SYSTEM]: Sandbox is off. "
+                "vip_sudo is available for privileged operations."
+            )
+        else:
+            msg = (
+                "[SYSTEM]: Sandbox is off. vip_sudo is disabled. "
+                "System sudo works normally."
+            )
+        return {"context": msg}
     return None
 
 
-def _handle_pending():
-    """查看待审批请求"""
-    import json, os, socket, struct
-    cs = os.environ.get("VIP_CONTROL_SOCK", "/var/run/hermes-vip/control.sock")
-    try:
-        s = socket.socket(socket.AF_UNIX)
-        s.settimeout(5)
-        s.connect(cs)
-        d = json.dumps({"type": "list_pending"}).encode()
-        s.sendall(struct.pack("!I", len(d)) + d)
-        rl = s.recv(4)
-        resp = json.loads(s.recv(struct.unpack("!I", rl)[0]).decode()) if rl else {}
-        s.close()
-    except Exception as exc:
-        return f"VIP daemon unreachable: {exc}"
+# ── Slash command handlers ──
 
-    pending = resp.get("pending", [])
-    if not pending:
-        return "No pending privilege requests."
-    lines = ["Pending privilege requests:"]
-    for item in pending:
-        lines.append(f"  {item['req_id'][:14]}: {str(item.get('command',''))[:60]}")
-    return "\n".join(lines)
+def _handle_vipsandbox(args: str) -> str:
+    args = args.strip().lower()
+    # /vipsandbox net on|off
+    if args.startswith("net "):
+        sub = args[4:].strip()
+        status = "on" if sandbox.network_enabled() else "off"
+        if sub == "on":
+            sandbox.set_network_enabled(True)
+            return "Sandbox network enabled. Will take effect on next chat."
+        elif sub == "off":
+            sandbox.set_network_enabled(False)
+            return "Sandbox network disabled. Will take effect on next chat."
+        else:
+            return f"Sandbox network: {status}. Use /vipsandbox net on|off to toggle."
+    # /vipsandbox on|off
+    status = "on" if sandbox.sandbox_enabled() else "off"
+    if args == "on":
+        sandbox.set_sandbox_enabled(True)
+        return "Sandbox enabled. Will take effect on next chat."
+    elif args == "off":
+        sandbox.set_sandbox_enabled(False)
+        return "Sandbox disabled. Will take effect on next chat."
+    else:
+        net = "on" if sandbox.network_enabled() else "off"
+        return f"Sandbox: {status}, network: {net}. Use /vipsandbox on|off or /vipsandbox net on|off."
+
+
+def _handle_vipsudo(args: str) -> str:
+    args = args.strip().lower()
+    status = "on" if sandbox.vip_sudo_enabled() else "off"
+    if args == "on":
+        sandbox.set_vip_sudo_enabled(True)
+        return "vip_sudo enabled. Will take effect on next chat."
+    elif args == "off":
+        sandbox.set_vip_sudo_enabled(False)
+        return "vip_sudo disabled. Will take effect on next chat."
+    else:
+        return f"vip_sudo: {status}. Use /vipsudo on|off to toggle."
+
+
+def _handle_vipdaemon(_args: str = "") -> str:
+    """Show daemon status (read-only)."""
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "hermes-vipd"],
+            capture_output=True, text=True, timeout=5,
+        )
+        status = result.stdout.strip()
+    except Exception:
+        status = "unknown"
+    return (
+        f"VIP daemon: {status}\n"
+        f"Start:   sudo systemctl start hermes-vipd    (manually)\n"
+        f"Stop:    sudo systemctl stop hermes-vipd     (manually)\n"
+        f"Status:  sudo systemctl status hermes-vipd  (manually)"
+    )

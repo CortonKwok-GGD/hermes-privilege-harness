@@ -74,6 +74,16 @@ rm -f /Library/LaunchDaemons/com.hermes.vipd.plist /Library/LaunchAgents/com.her
 rm -f /usr/local/bin/hermes-sandbox 2>/dev/null || true
 echo "  ✅ 清理完成"
 
+# ── 0.5 沙箱依赖 ──
+echo ""
+echo "📦 安装沙箱依赖 (bwrap)..."
+if command -v bwrap &>/dev/null; then
+    echo "  ⏭  bwrap 已安装"
+else
+    apt-get install -y bubblewrap 2>/dev/null && echo "  ✅ bwrap 已安装" || \
+        echo "  ⚠️  bwrap 安装失败，沙箱功能不可用"
+fi
+
 # ── 1. hermes-vip 用户 ──
 echo ""
 echo "👤 配置 $VIP_USER 用户..."
@@ -232,8 +242,10 @@ fi
 
 echo ""
 echo "┌─────────────────────────────────────────────┐"
-echo "│  ${GREEN}✅ Hermes VIP v3.3 安装完成${NC}                   │"
+echo "│  ${GREEN}✅ Hermes VIP v8.0 安装完成${NC}                   │"
 echo "│                                             │"
+echo "│  沙箱: bwrap (bubblewrap)                    │"
+echo "│  sandbox.py + config.yaml 已部署              │"
 echo "│  自启动: systemd (systemctl enable hermes-vipd) │"
 echo "│  管理: systemctl status/restart hermes-vipd  │"
 echo "│  日志: journalctl -u hermes-vipd -f          │"

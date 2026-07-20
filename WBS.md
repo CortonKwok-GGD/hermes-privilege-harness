@@ -308,7 +308,78 @@ LLM → vip_sudo("xxx") → pre_tool_call → stamp → {"action":"approve"} →
 | D5 | Desktop gateway notify 回退至 submit_pending 时的审批卡丢失 | 🟡 待上游沟通 |
 | D6 | `_hermesvip` 创建时阻止 macOS 自动加入 _lpoperator 等组 | 🔴 |
 | D7 | daemon 层 blocklist 检查（当前只在 guard 层做） | 🔴 |
-| D8 | stamp key 改为 SHA-256 摘要（消除 120 字符前缀碰撞风险） | 🔵 低优 |
+|| D8 | stamp key 改为 SHA-256 摘要（消除 120 字符前缀碰撞风险） | 🔵 低优 |
+|| D9 | MCP server bwrap 包装方案 | 🔵 Pending |
+
+---
+
+## 2026-07-18 v8.0 — 源头开关 (Source Switch)
+
+### 核心转变
+
+v7.x 所有方案（`_hermes` 用户、Docker 容器、三层 wrapper）都是**把 Hermes 塞进沙箱**。
+
+v8.0 翻转视角：**让 LLM 的工具调用默认在沙箱里执行，要出来才需审批。**
+
+### 当前架构（三条路）
+
+```
+                      ┌─ 子进程（terminal, execute_code）
+                      │   → bwrap 包装，透明放行（无审批）
+                      │
+所有工具 ──────────────┼─ 进程内函数（read_file, write_file, patch, search_files, vision_analyze）
+                      │   → block → "Use terminal: cat/echo/sed/grep..."
+                      │
+                      ├─ 数据工具（todo, memory, skill_*, cronjob, project_*, ...）
+                      │   → 放行（不碰文件系统）
+                      │
+                      ├─ 未知工具（browser_*, web_search, MCP, 未来工具...）
+                      │   → block → "Use vip_sudo"
+                      │
+                      └─ 出口（vip_sudo）
+                          → 审批卡（唯一需要用户批准的工具）
+```
+
+### 文件结构（2026-07-20）
+
+```
+~/.hermes/plugins/hermes-vip/
+├── config.yaml     ← 用户可编辑：沙箱开关、网络开关、挂载目录、vip_sudo开关
+├── sandbox.py      ← 沙箱检测、bwrap 包装、config 读写
+├── guard.py        ← check() 三条路分发 + vip_sudo handler + blocklist
+├── __init__.py     ← 注册入口 + /sandbox /vipsudo /vipdaemon 三个 slash command
+├── blocklist.yaml
+└── plugin.yaml
+```
+
+### 系统提示 (pre_llm_call, 四个状态)
+
+| sandbox | vip_sudo | network | 系统提示 |
+|:---:|:---:|:---:|---|
+| ON | ON | ON | 沙箱内。Terminal 无审批。vip_sudo 唯一需审批 |
+| ON | ON | OFF | 同↑ + 网络已隔离 |
+| ON | OFF | — | 沙箱内。Terminal 无审批。vip_sudo 关了，找用户 /vipsudo on |
+| OFF | ON | — | 沙箱关了。vip_sudo 可用 |
+| OFF | OFF | — | 全开放。系统 sudo 正常 |
+
+### 关键决策
+
+1. **不按工具名分类，按执行形态分类** — 子进程（bwrap 可包）vs 进程内函数（不能包）
+2. **没有白名单、没有 mount 列表补偿** — 能包进 bwrap 的就包，不能包的就 block
+3. **MCP 工具归属未知工具 → block → Use vip_sudo** — MCP 也是子进程，但 bwrap 包装方案待实现（D9）
+4. **execute_code 和 terminal 一样是子进程** — 之前漏了，现在也包 bwrap
+5. **network: false 默认隔离网络** — 用户可用 `/sandbox net on` 开启
+6. **所有开关写 config.yaml** — `/sandbox off` 持久化，新对话生效
+
+### 沙箱验证沙箱
+
+- 10.0.0.3 Ubuntu 22.04
+- bwrap 隔离：SSH 密钥不可读 ✅、/etc/shadow 不存在 ✅、sudo 不可用 ✅
+- 网络隔离：--unshare-net 生效 ✅、/sandbox net on 可解除 ✅
+- VIP plugin：30 个工具分类全部正确 ✅
+- 所有开关持久化到 config.yaml ✅
+- Daemon socket 权限 0o750 ✅（修复了 SOCKET_DIR_MODE=0o700 的 bug）
+
 
 ---
 

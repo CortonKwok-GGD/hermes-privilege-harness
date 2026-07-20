@@ -1,0 +1,49 @@
+# VIP plugin configuration
+# Changes take effect on next Hermes chat session (no daemon restart needed).
+# Paths support $HOME, ~ and other environment variables.
+
+sandbox:
+  # Enable sandbox: wraps terminal commands in bwrap.
+  enabled: true
+
+  # Network access inside sandbox.
+  # false: network isolated (--unshare-net). pip/git/curl won't work.
+  # true:  network shared with host. Use cautiously.
+  network: false
+
+  # ── Workspace mounts (user-configurable) ──
+  # These directories are bind-mounted into the bwrap sandbox.
+  # The agent can read/write here without any approval.
+  # Paths NOT listed here require vip_sudo to access.
+  mounts:
+    - path: $HOME/hermes-workspace
+      writable: true
+    - path: $HOME/.hermes/skills
+      writable: true
+    - path: $HOME/.hermes/memory
+      writable: true
+    - path: $HOME/.hermes/state.db
+      writable: true
+    - path: $HOME/.hermes/sessions
+      writable: true
+    - path: $HOME/.hermes/config.yaml
+      writable: false
+
+  # ── System mounts (hardcoded, always applied) ──
+  # These are read-only infrastructure paths required for bwrap
+  # to execute any command. Not user-configurable.
+  #
+  #   /usr, /lib, /lib64       — binaries and shared libraries
+  #   /etc/passwd, /etc/group  — user/group names (world-readable,
+  #                              password hashes are in /etc/shadow
+  #                              which is NOT mounted)
+  #   /etc/resolv.conf          — DNS resolution
+  #   /etc/ssl, /etc/ca-certificates — HTTPS certificate chain
+  #   /home, /root, /var        — empty tmpfs (process-compat)
+  #   /proc, /dev               — kernel interfaces
+
+vip_sudo:
+  # Enable vip_sudo tool and sudo interception.
+  # When disabled: terminal sudo passes through normally (system sudo),
+  # vip_sudo tool is removed from toolset.
+  enabled: true

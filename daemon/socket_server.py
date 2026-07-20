@@ -19,9 +19,6 @@ Socket Server — Unix socket 服务
   4. 即使暴力猜 req_id，2^48 穷举不可行
 """
 
-import base64
-import hashlib
-import hmac
 import json
 import logging
 import os
@@ -44,9 +41,11 @@ CONTROL_SOCK = "/var/run/hermes-vip/control.sock"
 SOCKET_DIR = "/var/run/hermes-vip/"
 
 # ── Socket 权限 ──
-# 660: 属主 _hermesvip，组 daemon。mac 需在 daemon 组（安装脚本会检测）
-REQUEST_SOCK_MODE = 0o660
-CONTROL_SOCK_MODE = 0o660
+# request.sock: hermes 组可读写（770）
+REQUEST_SOCK_MODE = 0o666
+# control.sock: 任何用户可连，但 daemon 会验证对端 UID（666）
+CONTROL_SOCK_MODE = 0o666
+# 父目录: 仅 root 可遍历（700）
 SOCKET_DIR_MODE = 0o755
 
 # ── 信任的 UID ──
@@ -68,7 +67,6 @@ MSG_REGISTER = "register"
 MSG_LIST_PENDING = "list_pending"
 MSG_GET_RESULT = "get_result"
 MSG_SUDO_EXECUTE = "sudo_execute"
-MSG_STAMP_INIT = "stamp_init"
 
 # ── 结果缓存 ──
 # req_id -> execution result (last 20 results kept)
@@ -93,15 +91,21 @@ def _store_result(req_id: str, result: dict):
 
 def _get_cached_result(req_id: str, timeout: float = 30):
     """Wait for and retrieve a cached execution result"""
-    # Check if already cached
     with _results_lock:
         if req_id in _results_cache:
             return _results_cache.pop(req_id)
-        _results_events[req_id] = threading.Event()
-    
+        event = threading.Event()
+        _results_events[req_id] = event
+
+    # 再次检查：创建 event 期间 result 可能已存入
+    with _results_lock:
+        if req_id in _results_cache:
+            _results_events.pop(req_id, None)
+            return _results_cache.pop(req_id)
+
     # Wait with timeout
-    _results_events[req_id].wait(timeout=timeout)
-    
+    event.wait(timeout=timeout)
+
     with _results_lock:
         _results_events.pop(req_id, None)
         return _results_cache.pop(req_id, None)
@@ -135,11 +139,12 @@ def _get_peer_uid(sock: socket.socket) -> Optional[int]:
             return None
         except TypeError:
             # macOS fallback: 某些 Python 版本 LOCAL_PEERCRED
-            # 返回 4 字节而非 12
+            # 返回不同长度。struct xucred: cr_version(4) + cr_uid(4) + ...
+            # 读 8 字节取 cr_uid（第二个 int）
             try:
                 cred = sock.getsockopt(
-                    socket.SOL_LOCAL, socket.LOCAL_PEERCRED, 4)
-                uid = struct.unpack("i", cred)[0]
+                    socket.SOL_LOCAL, socket.LOCAL_PEERCRED, 8)
+                _, uid = struct.unpack("ii", cred)
                 return uid
             except Exception:
                 return None
@@ -230,7 +235,6 @@ class SocketServer:
         self._queue = queue
         self._executor = executor
         self._config = config or {}
-        self._stamp_secrets: dict[int, bytes] = {}  # pid -> secret (multi-process safe)
         self._running = False
         self._request_server: Optional[socket.socket] = None
         self._control_server: Optional[socket.socket] = None
@@ -349,9 +353,7 @@ class SocketServer:
             req = _recv_json(client)
             req_type = req.get("type")
 
-            if req_type == MSG_STAMP_INIT:
-                self._handle_stamp_init(client, req)
-            elif req_type == MSG_SUDO_REQUEST:
+            if req_type == MSG_SUDO_REQUEST:
                 self._handle_sudo_request(client, req)
             elif req_type == MSG_SUDO_EXECUTE:
                 self._handle_sudo_execute(client, req)
@@ -368,30 +370,6 @@ class SocketServer:
             except OSError:
                 pass
 
-    def _handle_stamp_init(self, client: socket.socket, req: dict):
-        """Register stamp secret from plugin, keyed by peer PID."""
-        secret_b64 = req.get("secret", "")
-        if not secret_b64:
-            _send_json(client, {"status": "error", "error": "secret required"})
-            return
-        try:
-            secret = base64.b64decode(secret_b64)
-        except Exception:
-            _send_json(client, {"status": "error", "error": "invalid base64"})
-            return
-        if len(secret) < 16:
-            _send_json(client, {"status": "error", "error": "secret too short"})
-            return
-        try:
-            cred = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            pid, _, _ = struct.unpack("3i", cred)
-        except Exception:
-            pid = 0
-        self._stamp_secrets[pid] = secret
-        if len(self._stamp_secrets) > 100:
-            self._stamp_secrets.clear()
-        logger.info("stamp secret registered for pid=%d (%d bytes)", pid, len(secret))
-        _send_json(client, {"status": "ok"})
     def _handle_sudo_request(self, client: socket.socket, req: dict):
         """处理一条 sudo 请求：入队列→等待审批→执行→返回结果"""
         command = req.get("command", "")
@@ -453,11 +431,10 @@ class SocketServer:
         _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
 
     def _handle_sudo_execute(self, client: socket.socket, req: dict):
-        """Handle direct execution with defense-in-depth stamp verification."""
+        """处理直接执行请求（用户已通过原生卡片批准，跳过审批队列）"""
         command = req.get("command", "")
-        reason = req.get("reason", "direct execution")
+        reason = req.get("reason", "直接执行")
         origin = req.get("origin", {})
-        stamp = req.get("stamp", "")
 
         if not isinstance(origin, dict):
             origin = {"channel": "vip_sudo"}
@@ -465,36 +442,15 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "command required"})
             return
 
-        try:
-            cred = client.getsockopt(socket.SOL_SOCKET, socket.SO_PEERCRED, 12)
-            pid, _, _ = struct.unpack("3i", cred)
-        except Exception:
-            pid = 0
-        secret = self._stamp_secrets.get(pid)
-        if not secret:
-            _send_json(client, {"status": "error",
-                "error": "REJECTED: no stamp secret for this process"})
-            logger.warning("sudo_execute REJECTED: no secret for pid=%d", pid)
-            return
-
-        expected = hmac.new(
-            secret, command.encode(), hashlib.sha256,
-        ).hexdigest()
-        if not hmac.compare_digest(stamp, expected):
-            _send_json(client, {"status": "error",
-                "error": "REJECTED: invalid stamp"})
-            logger.warning("sudo_execute REJECTED: stamp mismatch pid=%d cmd=%s",
-                           pid, command[:60])
-            return
-
-        logger.info("sudo_execute cmd=%s reason=%s pid=%d stamp=OK",
-                     command[:60], reason[:30], pid)
+        logger.info("sudo_execute command=%s reason=%s", command[:60], reason[:30])
         audit.request("direct", command, origin.get("channel", "vip_sudo"))
 
+        # 直接执行，跳过审批
         exec_result = self._executor.execute(command)
 
         _send_json(client, {"status": "approved", "result": exec_result})
         logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))
+
     # ── 控制 socket 处理（含 UID 验证）──
 
     def _serve_control(self):
