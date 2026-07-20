@@ -312,6 +312,44 @@ else
     echo "  手动启动: sudo -u $VIP_USER $VIP_BIN &"
 fi
 
+
+# ── 9. Workspace .git 权限（Docker 终端兼容）──
+# Hermes Docker 后台以 _hermes 用户运行，需能读写 workspace 下 git 仓库。
+# 不影响 ~/.hermes/ 的权限控制。
+echo ""
+echo "🔗 配置 workspace .git 共享..."
+WS_GROUP="hermes-shared"
+
+# 创建共享组（不存在则创建）
+if ! getent group "$WS_GROUP" &>/dev/null; then
+    groupadd -f "$WS_GROUP" 2>/dev/null || pw groupadd "$WS_GROUP" 2>/dev/null || true
+fi
+
+# 加真实用户到共享组
+usermod -a -G "$WS_GROUP" "$REAL_USER" 2>/dev/null || \
+    dseditgroup -o edit -a "$REAL_USER" -t user "$WS_GROUP" 2>/dev/null || true
+
+# 加 _hermes（如果存在）到共享组
+if id "_hermes" &>/dev/null; then
+    usermod -a -G "$WS_GROUP" _hermes 2>/dev/null || \
+        dseditgroup -o edit -a _hermes -t user "$WS_GROUP" 2>/dev/null || true
+    SHARED_MSG="_hermes + $REAL_USER"
+else
+    SHARED_MSG="$REAL_USER（_hermes 不存在，跳过）"
+fi
+
+# 设置 workspace 下所有 .git 目录的组权限（不碰 ~/.hermes/）
+WS_DIR="$REAL_HOME/hermes-workspace"
+if [ -d "$WS_DIR" ]; then
+    find "$WS_DIR" -name ".git" -type d -not -path "*/.hermes/*" 2>/dev/null | while read gd; do
+        chgrp -R "$WS_GROUP" "$gd" 2>/dev/null || true
+        chmod -R g+rwX "$gd" 2>/dev/null || true
+    done
+    echo "  ✅ workspace .git 权限已配置（$SHARED_MSG）"
+else
+    echo "  ⏭  $WS_DIR 不存在，跳过"
+fi
+
 echo ""
 echo "┌─────────────────────────────────────────────┐"
 echo "│  ${GREEN}✅ Hermes VIP v8.0 安装完成${NC}                  │"
