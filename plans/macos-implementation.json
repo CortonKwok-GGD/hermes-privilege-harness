@@ -1,0 +1,57 @@
+[
+  {
+    "id": "macos-phase1",
+    "content": "Phase 1: VIP plugin works on macOS (no sandbox, only vip_sudo)",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase1.1",
+    "content": "guard.py cross-platform: sandbox.in_sandbox() None = pass through",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase1.2",
+    "content": "sandbox.py macOS safe fallback: build_bwrap_cmd() returns original cmd",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase1.3",
+    "content": "Test plugin loading, slash commands, pre_tool_call hook on macOS",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase1.4",
+    "content": "Test vip_sudo approval chain: card → daemon → root",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase2",
+    "content": "Phase 2: macOS native sandbox via sandbox-exec",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase2.1",
+    "content": "Research sandbox-exec SBPL profile: tmpfs home, network control, readonly system",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase2.2",
+    "content": "Replace bwrap with sandbox-exec in sandbox.py: platform-detect → sandbox-exec -f profile.sb",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase2.3",
+    "content": "Network toggle via SBPL deny network-outbound",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase2.4",
+    "content": "End-to-end verification: sandbox-exec equivalence to bwrap",
+    "status": "pending"
+  },
+  {
+    "id": "macos-phase2.5",
+    "content": "Update install-macos.sh with sandbox-exec support",
+    "status": "pending"
+  }
+]

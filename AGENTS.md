@@ -131,3 +131,23 @@ Everything that affects system state must be tested on 10.0.0.3 first.
 
 ### 3. ⚔️ 沙箱攻击模拟
 Every test round includes attacker perspective: can LLM read SSH keys? Can it bypass bwrap? Can it write outside workspace?
+
+---
+
+## macOS vs Linux 差异
+
+| 方面 | Linux (10.0.0.3) | macOS (本地) |
+|:---|:---|:---|
+| 沙箱实现 | bwrap (bubblewrap) | sandbox-exec (Phase 2)，当前无沙箱 (Phase 1) |
+| 沙箱状态 | ✅ 完整 bwrap 隔离 | ⬜ Phase 1 仅 vip_sudo，Phase 2 加 sandbox-exec |
+| daemon 管理 | systemd | Login Items + watchdog |
+| socket 路径 | `/run/hermes-vip/request.sock` | `/var/run/hermes-vip/request.sock` |
+| 安装脚本 | `examples/install-linux.sh` | `examples/install-macos.sh` |
+| 验证沙箱 | `ssh admin@10.0.0.3` | 本地 Desktop 开新对话 |
+
+### 开发规则
+
+- **Linux 上开发沙箱功能**：`sandbox.py` 改动先部署到 10.0.0.3 测试
+- **macOS 上开发非沙箱功能**：guard 逻辑、slash command、config 读写可在本地直接测
+- **跨平台改动**：同时部署沙箱验证 Linux + 本地验证 macOS 不崩
+- **不要在一个平台上写死另一个平台的逻辑**：用 `sys.platform` 或 `shutil.which("bwrap")` 做运行时检测
