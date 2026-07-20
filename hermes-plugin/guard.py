@@ -253,7 +253,7 @@ print(result.stdout or result.stderr)
         return {"action": "block", "message": _FILE_TOOL_HINTS[tool_name]}
 
     # ── 放行白名单（已知不碰文件系统的数据工具）──
-    if tool_name in ("todo", "memory", "session_search", "delegate_task", "clarify", "skill_view", "skills_list", "skill_manage", "cronjob", "process", "text_to_speech", "fact_store", "fact_feedback", "project_create", "project_list", "project_switch", "read_terminal", "close_terminal"):
+    if tool_name in ("todo", "memory", "session_search", "delegate_task", "clarify", "skill_view", "skills_list", "skill_manage", "process", "text_to_speech", "fact_store", "fact_feedback", "project_create", "project_list", "project_switch", "read_terminal", "close_terminal"):
         return None
 
     # 未知工具 → 默认拦，指向 vip_sudo
