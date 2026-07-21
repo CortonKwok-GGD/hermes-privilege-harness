@@ -557,3 +557,40 @@ file 属组 `staff`(gid=20) vs `_hermes` 在 `admin`(gid=80)。
 | guard.py | cronjob 移出放行白名单 |
 | examples/install-macos.sh | 写入 command_allowlist |
 | examples/install-linux.sh | 同上 |
+
+## 2026-07-21 (late) — Docker 沙箱验证通过 + macOS 审批模式调优
+
+### 完成
+
+1. **Linux Docker 沙箱验证** (10.0.0.3)
+   - Alpine 镜像预装 python3/git/curl/gcc/bash
+   - 常驻容器 `hermes-vm` / `hermes-vm-no-net`，`--user 1000:1000`
+   - `hermes-run` → `docker exec`，config.yaml 驱动 `-v` 挂载
+   - 白名单隔离：只暴露 mount 清单内的路径，宿主 /home/admin 完全不可见
+   - 网络开关：`--network bridge/none`
+   - 测试全部通过 ✅
+
+2. **macOS 审批卡问题排障**
+   - 根因链：`chmod +x` / `rm -rf` → Tirith（已关）→ Hermes `detect_dangerous_command` → 弹卡
+   - VIP plugin `__init__.py` 被注入 patch 写崩 → guard 未加载 → 命令绕过了 hermes-run
+   - 恢复 git 版本 → guard 恢复
+   - `command_allowlist: hermes-run*` 可通过 Hermes 核心白名单跳过 `detect_dangerous_command`
+   - Desktop 设置 `approvals.mode: off` 跳过全部 Hermes 安全扫描
+
+3. **`_hermes` 用户隔离收紧**
+   - 安装脚本移除 `_hermes` 加入 `hermes-shared` 组的步骤
+   - workspace 访问改为 ACL 控制（`apply_mount_acls`）
+
+### 遗留
+
+- `command_allowlist: hermes-run*` 因 macOS `com.apple.provenance` 写保护未能清除（无副作用，approvals.mode: off 下不用）
+- 沙箱 10.0.0.3 网络不稳定，偶发 SSH 超时
+
+### 架构现状
+
+```
+Linux (10.0.0.3):   hermes-run → docker exec hermes-vm (--network none/bridge)
+macOS (本地):       hermes-run → sudo -u _hermes bash -c (sandbox-exec --no-net)
+```
+
+双平台统一入口 `hermes-run`，底层实现不同但接口一致。
