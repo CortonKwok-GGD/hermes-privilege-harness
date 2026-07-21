@@ -32,13 +32,21 @@ for m in c.get('sandbox', {}).get('mounts', []):
 done
 [ -z "$VOLUME_ARGS" ] && VOLUME_ARGS="-v $HOME/hermes-workspace:$HOME/hermes-workspace"
 
-CID=$(/usr/local/bin/container list --quiet --all 2>/dev/null | grep -x "$CNAME")
-if [ -z "$CID" ]; then
-    NET=""; [ "$NO_NET" = "1" ] && NET="--network none"
-    /usr/local/bin/container run -d --name "$CNAME" --arch amd64 $NET $VOLUME_ARGS \
-        hermes-vm:latest sleep infinity 2>&1 || {
-        echo "Error: failed to create container $CNAME" >&2; exit 1
-    }
+# --- Container lifecycle management ---
+# Three states: running / stopped / absent
+RUNNING=$(/usr/local/bin/container list --quiet 2>/dev/null | grep -x "$CNAME") || true
+if [ -z "$RUNNING" ]; then
+    if /usr/local/bin/container list --quiet --all 2>/dev/null | grep -x "$CNAME" >/dev/null; then
+        # Exists but stopped → start
+        /usr/local/bin/container start "$CNAME" 2>&1
+    else
+        # Does not exist → create
+        NET=""; [ "$NO_NET" = "1" ] && NET="--network none"
+        /usr/local/bin/container run -d --name "$CNAME" --arch amd64 $NET $VOLUME_ARGS \
+            hermes-vm:latest sleep infinity 2>&1 || {
+            echo "Error: failed to create container $CNAME" >&2; exit 1
+        }
+    fi
 fi
 
 CMD="$*"
