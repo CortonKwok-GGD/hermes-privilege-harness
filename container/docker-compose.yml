@@ -1,0 +1,34 @@
+# Hermes Container Isolation — docker-compose.yml
+# v4: 容器 hermes dashboard + web-dist mount
+#   浏览器 → http://127.0.0.1:9119 → _hermes(996)
+#   CLI    → wrapper → docker exec → _hermes(996)
+
+services:
+  hermes-agent:
+    image: hermes-isolated
+    container_name: hermes-agent
+    restart: unless-stopped
+    network_mode: host
+    command: ["hermes", "dashboard", "--port", "9119", "--host", "127.0.0.1", "--skip-build", "--no-open"]
+
+    volumes:
+      - ./config.yaml:/home/_hermes/.hermes/config.yaml:ro
+      - ${HOME}/.hermes/skills:/home/_hermes/.hermes/skills:rw
+      - ${HOME}/.hermes/memory:/home/_hermes/.hermes/memory:rw
+      - ${HOME}/hermes-workspace:/workspace:rw
+      - ./state/state.db:/home/_hermes/.hermes/state.db:rw
+      - ./state/sessions:/home/_hermes/.hermes/sessions:rw
+      - /var/run/hermes-vip:/var/run/hermes-vip:ro
+      - ${HOME}/.hermes/hermes-agent/apps/desktop/dist:/web-dist:ro
+
+    env_file:
+      - ${HOME}/.hermes/.env
+
+    environment:
+      - HERMES_HOME=/home/_hermes/.hermes
+      - HERMES_DESKTOP_IGNORE_EXISTING=1
+      - HERMES_DASHBOARD_SESSION_TOKEN=hermes-container-token-2026
+      - HERMES_WEB_DIST=/web-dist
+
+    tmpfs:
+      - /tmp

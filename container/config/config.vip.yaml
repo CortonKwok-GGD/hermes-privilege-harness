@@ -1,0 +1,13 @@
+# Hermes VIP sandbox config — deploy to ~/.hermes/plugins/hermes-vip/config.yaml
+sandbox:
+  enabled: true
+  mounts:
+  - path: $HOME/hermes-workspace
+    writable: true
+  - path: $HOME/.hermes/plugins/hermes-vip/config.yaml
+    writable: false
+  - path: $HOME/.hermes/config.yaml
+    writable: false
+  network: true
+vip_sudo:
+  enabled: true

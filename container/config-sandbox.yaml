@@ -1,0 +1,35 @@
+# Hermes Container — 沙箱配置 (10.0.0.3)
+# DeepSeek 原生 API
+
+model:
+  default: deepseek-chat
+  provider: deepseek
+
+providers:
+  deepseek:
+    name: DeepSeek
+    base_url: https://api.deepseek.com/v1
+    api_key: "${DEEPSEEK_API_KEY}"
+    models:
+      deepseek-chat:
+        supports_tools: true
+      deepseek-reasoner:
+        supports_tools: false
+
+gateway:
+  dashboard:
+    bind: 127.0.0.1
+    port: 19119
+    session_token: "hermes-container-token-2026"
+
+tools:
+  terminal:
+    enabled: true
+  browser:
+    enabled: false
+  mcp:
+    enabled: false
+
+vip:
+  socket_path: /var/run/hermes-vip.sock
+  enabled: true

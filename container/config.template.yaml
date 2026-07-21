@@ -1,0 +1,54 @@
+# Hermes Container — 配置文件模板
+# 复制到 ~/.hermes/hermes-container-config.yaml 并填入你的值
+# 容器启动时只读挂载到 /home/_hermes/.hermes/config.yaml
+
+# ── 模型配置 ──────────────────────────────────────────────────
+# 容器内 Hermes 通过 HTTP 连接模型服务器（宿主机 rapid-mlx 或其他 provider）
+model:
+  default: deepseek-v4-pro
+  provider: aliteam
+
+providers:
+  aliteam:
+    name: Alibaba Cloud
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key: "${DASHSCOPE_API_KEY}"  # 从环境变量或 .env 读取
+    models:
+      deepseek-v4-pro:
+        supports_tools: true
+        supports_vision: false
+      deepseek-v4-flash:
+        supports_tools: true
+        supports_vision: false
+
+# 本地模型（Mac rapid-mlx，容器内通过宿主机 IP 访问）
+# 如果使用本地模型，取消注释并填入宿主机 IP:
+# providers:
+#   custom:local-4b:
+#     name: 本地 rapid-mlx
+#     base_url: http://host.docker.internal:8080/v1
+#     model: Qwen3.5-4B-mxfp4
+#     models:
+#       Qwen3.5-4B-mxfp4:
+#         supports_tools: true
+
+# ── 网关配置 ──────────────────────────────────────────────────
+gateway:
+  dashboard:
+    bind: 0.0.0.0
+    port: 19119
+    session_token: "hermes-container-token-2026"
+
+# ── 工具配置 ──────────────────────────────────────────────────
+tools:
+  terminal:
+    enabled: true
+  browser:
+    enabled: false  # 容器内无桌面浏览器
+  mcp:
+    enabled: false
+
+# ── 安全配置 ──────────────────────────────────────────────────
+vip:
+  socket_path: /var/run/hermes-vip.sock
+  enabled: true

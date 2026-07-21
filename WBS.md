@@ -12,11 +12,42 @@
 目标：    LLM 只有一个提权通道：vip_sudo → 原生审批卡片 → 用户批准 → root
 仓库：    https://github.com/CortonKwok-GGD/hermes-privilege-harness
          https://gitee.com/cortonkwok/hermes-privilege-harness
-平台：    macOS (Login Items + watchdog) / Linux (systemd)
+平台：    macOS (Login Items + watchdog) / Linux (systemd) / Apple container
 版本：    v1.0.0
 分支：    main（完整版）/ passive-vip（社区 PR 版）
 PR：     https://github.com/NousResearch/hermes-agent/pull/63066
 状态：    ✅ 本地 Mac 验证 / ✅ 沙箱验证 / 🟡 PR 待 review
+```
+
+## 2026-07-21: hermes-container 合并入本仓库
+
+**背景:** hermes-container 沙箱运行时此前在独立的 \`~/hermes-workspace/hermes-container/\` 目录开发，
+有独立 git 历史（3 commits），指向同一个远程 hermes-privilege-harness。
+
+**操作:**
+1. hermes-container/ 全部内容移至 container/ 目录
+2. 删除嵌套的冗余 hermes-privilege-harness/ clone（untracked，与外层重复）
+3. 更新 sandbox/macos.py 文档字符串反映 Apple container 架构
+4. 更新 AGENTS.md 反映新目录结构
+5. 删除原 ~/hermes-workspace/hermes-container/ 目录
+
+**新结构:**
+```
+apps/hermes-vip/
+├── container/           <- 容器沙箱运行时（原 hermes-container）
+│   ├── macos/
+│   │   ├── hermes-run.sh       (dev; dd to /usr/local/bin/hermes-run)
+│   │   ├── Dockerfile.hermes-vm (macOS Apple container image)
+│   │   └── install.sh
+│   ├── Dockerfile              (Linux Docker sandbox)
+│   ├── docker-compose.yml
+│   └── config/
+├── hermes-plugin/       <- VIP plugin
+│   └── sandbox/         <- platform dispatch + runtimes
+├── daemon/              <- VIP daemon
+├── connectors/
+├── examples/
+└── ...
 ```
 
 ## 架构演进

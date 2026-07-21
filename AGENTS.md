@@ -27,10 +27,12 @@ swift ~/hermes-workspace/sanzi/scripts/ocr.swift <image_path>
 | What | Path |
 |------|------|
 | Git repo | `~/hermes-workspace/apps/hermes-vip/` |
+| Container sandbox source | `container/` (hermes-run.sh, Dockerfile, Dockerfile.hermes-vm) |
 | Daemon install | `/usr/local/lib/hermes-vip/` |
 | Daemon entry | `/usr/local/bin/hermes-vipd` |
 | Plugin install | `~/.hermes/plugins/hermes-vip/` |
 | VIP config | `~/.hermes/plugins/hermes-vip/config.yaml` |
+| Container runtime (deployed) | `/usr/local/bin/hermes-run` ← deploy from `container/macos/hermes-run.sh` |
 | Blocklist | `/usr/local/etc/hermes-vip/blocklist.yaml` |
 | Sandbox | `ssh admin@10.0.0.3` |
 
@@ -167,7 +169,7 @@ Every test round includes attacker perspective: can LLM read SSH keys? Can it by
 | 平台 | 实现 | 隔离机制 |
 |:---|:---|:---|
 | Linux (10.0.0.3) | hermes-run to docker exec hermes-vm | 容器卷挂载白名单 + --network none/bridge |
-| macOS (本地) | hermes-run to sudo -u _hermes bash -c | _hermes 用户隔离 + sandbox-exec |
+| macOS (本地) | hermes-run to container exec hermes-vm | Apple native container VM 隔离 + --network none |
 ### Linux Docker 沙箱明细
 - 镜像: hermes-vm (Alpine 3.20 + python3/git/curl/gcc/bash)
 - 容器: 常驻 hermes-vm / hermes-vm-no-net, --user 1000:1000
@@ -182,16 +184,6 @@ Every test round includes attacker perspective: can LLM read SSH keys? Can it by
 1. Linux 沙箱 (10.0.0.3) 先验证
 2. macOS 本地 直接测
 3. 生产部署 用户确认
-
-### Git 推送（双远端）
-
-推送到 GitHub 和 Gitee 需用 workspace 专用 SSH key：
-
-
-
-SSH key: ~/hermes-workspace/.ssh/id_ed25519
-远端: github (CortonKwok-GGD), gitee (cortonkwok)
-
 
 ### Git 推送（双远端）
 

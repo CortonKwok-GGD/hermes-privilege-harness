@@ -98,6 +98,20 @@ rm -f "$VIP_RUN/request.sock" "$VIP_RUN/control.sock" 2>/dev/null || true
 
 echo "  ✅ 清理完成"
 
+# ── 0.5 容器沙箱 (hermes-run + 容器镜像) ──
+echo ""
+echo "📦 安装容器沙箱 (Apple container CLI)..."
+if command -v /usr/local/bin/container &>/dev/null; then
+    CONTAINER_SH="$PROJECT_DIR/container/macos/install.sh"
+    if [ -f "$CONTAINER_SH" ]; then
+        bash "$CONTAINER_SH"
+    else
+        echo -e "  ${YELLOW}⚠️  未找到 container/macos/install.sh，跳过${NC}"
+    fi
+else
+    echo -e "  ${YELLOW}⚠️  Apple container CLI 未安装（需 macOS 26+），跳过${NC}"
+fi
+
 # ── 1. _hermesvip 用户 ──
 echo ""
 echo "👤 配置 $VIP_USER 用户..."
@@ -341,8 +355,8 @@ echo ""
 echo "┌─────────────────────────────────────────────┐"
 echo "│  ${GREEN}✅ Hermes VIP v8.0 安装完成${NC}                  │"
 echo "│                                             │"
-echo "│  ⚠️  沙箱功能 (bwrap) 当前仅 Linux              │"
-echo "│  macOS sandbox-exec 支持待实现                 │"
+echo "│  沙箱: Apple container (VM 级隔离)               │"
+echo "│  Linux: bwrap (容器卷挂载 + --network none)    │"
 echo "│  自启动: Login Items（重启自动启动）             │"
 echo "│  日志: tail /tmp/hermes-vipd-watchdog.log    │"
 echo "│  daemon 日志: tail $VIP_LOG/vipd.log         │"
