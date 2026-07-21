@@ -279,14 +279,7 @@ fi
 
 usermod -a -G "$WS_GROUP" "$REAL_USER" 2>/dev/null || \
     dseditgroup -o edit -a "$REAL_USER" -t user "$WS_GROUP" 2>/dev/null || true
-
-if id "_hermes" &>/dev/null; then
-    usermod -a -G "$WS_GROUP" _hermes 2>/dev/null || \
-        dseditgroup -o edit -a _hermes -t user "$WS_GROUP" 2>/dev/null || true
-    SHARED_MSG="_hermes + $REAL_USER"
-else
-    SHARED_MSG="$REAL_USER（_hermes 不可用，Hermes Desktop 未安装）"
-fi
+SHARED_MSG="$REAL_USER（_hermes 通过 ACL 控制，不加入共享组）"
 
 WS_DIR="$REAL_HOME/hermes-workspace"
 if [ -d "$WS_DIR" ]; then
