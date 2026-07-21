@@ -159,3 +159,26 @@ Every test round includes attacker perspective: can LLM read SSH keys? Can it by
 子进程 → hermes-run 包装（terminal, execute_code）
 放行白名单 → cronjob 移除（网络绕过风险）
 未知工具 → block → Use vip_sudo
+
+## v8.2 架构更新
+
+### 沙箱实现
+
+| 平台 | 实现 | 隔离机制 |
+|:---|:---|:---|
+| Linux (10.0.0.3) | hermes-run to docker exec hermes-vm | 容器卷挂载白名单 + --network none/bridge |
+| macOS (本地) | hermes-run to sudo -u _hermes bash -c | _hermes 用户隔离 + sandbox-exec |
+### Linux Docker 沙箱明细
+- 镜像: hermes-vm (Alpine 3.20 + python3/git/curl/gcc/bash)
+- 容器: 常驻 hermes-vm / hermes-vm-no-net, --user 1000:1000
+- 挂载: config.yaml sandbox.mounts 驱动 -v 参数
+- 网络: sandbox.network true/false 控制 --network bridge/none
+- 白名单外路径完全不可见
+### macOS 审批
+- Tirith: security.tirith_enabled: false
+- 危险命令检测: Desktop approvals.mode: off 跳过
+- VIP guard: 仍拦截 sudo 提权 + 包装 hermes-run
+### 开发验证顺序
+1. Linux 沙箱 (10.0.0.3) 先验证
+2. macOS 本地 直接测
+3. 生产部署 用户确认
