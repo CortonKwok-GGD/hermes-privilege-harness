@@ -182,3 +182,28 @@ Every test round includes attacker perspective: can LLM read SSH keys? Can it by
 1. Linux 沙箱 (10.0.0.3) 先验证
 2. macOS 本地 直接测
 3. 生产部署 用户确认
+
+### Git 推送（双远端）
+
+推送到 GitHub 和 Gitee 需用 workspace 专用 SSH key：
+
+
+
+SSH key: ~/hermes-workspace/.ssh/id_ed25519
+远端: github (CortonKwok-GGD), gitee (cortonkwok)
+
+
+### Git 推送（双远端）
+
+推送到 GitHub 和 Gitee 需用 workspace 专用 SSH key:
+
+```
+cd ~/hermes-workspace/apps/hermes-vip
+GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/hermes-workspace/.ssh/id_ed25519" git push github main
+GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/hermes-workspace/.ssh/id_ed25519" git push gitee main
+GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/hermes-workspace/.ssh/id_ed25519" git push --force github main
+GIT_SSH_COMMAND="ssh -o StrictHostKeyChecking=no -i ~/hermes-workspace/.ssh/id_ed25519" git push --force gitee main
+```
+
+SSH key: ~/hermes-workspace/.ssh/id_ed25519
+远端: github (CortonKwok-GGD), gitee (cortonkwok)
