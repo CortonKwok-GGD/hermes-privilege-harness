@@ -659,3 +659,31 @@ macOS (本地):       hermes-run → sudo -u _hermes bash -c (sandbox-exec --no-
 - XPC 绑定 Aqua session: daemon 无法调 container CLI
 - 多架构镜像: docker save 缺 blob, index.json 只保留 amd64
 - pyyaml 缺失: pip3 install pyyaml (hermes-run 宿主机执行)
+
+---
+
+## 2026-07-25: 安装脚本健壮性 + hermes-run 重试机制
+
+### 修复清单
+
+| # | 文件 | 修复 | 问题 |
+|---|------|------|------|
+| 1 | `examples/hermes-vipd-watchdog.sh` | 启动前自动创建 `/var/run/hermes-vip/` | macOS 重启后 tmpfs 清空目录 |
+| 2 | `examples/install-macos.sh` | 容器检测用 `sudo -u mac container list` | root 看不到 per-user 容器 |
+| 3 | `examples/install-macos.sh` | connectors/ 目录不存在时静默跳过 | `set -e` 导致安装中断 |
+| 4 | `examples/install-macos.sh` | config.yaml chmod 600→644 | `_hermesvip` 读不了 |
+| 5 | `examples/install-macos.sh` | cp→cp -R 拷贝 plugin 子目录 | sandbox/ 目录丢失 |
+| 6 | `examples/install-macos.sh` | 去 Linux 命令 getent/groupadd/usermod，macOS 专用 dseditgroup | macOS 没有这些命令 |
+| 7 | `examples/install-macos.sh` | 容器部分内联，删除散落的 `container/macos/install.sh` | 减少碎片子脚本 |
+| 8 | `daemon/vipd.py` | connectors import 从强制改成 try/except ImportError | 目录不存在导致 daemon 启动崩溃 |
+| 9 | `daemon/socket_server.py` | 加 MSG_PING 处理，支持 platform 检测 | `/vipdaemon` 不识别 ping |
+| 10 | `container/macos/hermes-run.sh` | 三阶梯重试(2s/60s/600s)取代 `container restart` | 并行任务被杀 |
+| 11 | `container/macos/hermes-run.sh` | ^C 信号转发 trap+marker 机制 | 孤儿进程残留 |
+| 12 | `docs/ssh-git-guide.md` | 补 Keychain 持久化 + Git HTTP 代理说明 | 重启后需手动 ssh-add |
+| 13 | `AGENTS.md` | 更新 Known issues + hermes-run 行数 + git push 说明 | 文档过时 |
+
+### 未解决
+
+- **10.0.0.0/24 网络**：容器内不可达（Apple bridge100 NAT 只到 en0/en1，不转发 tinc 接口 utun5）。PF 转发方案已分析但未部署（`pfctl -f` 会冲掉动态锚点）
+- **新加坡 VPS SOCKS5**：只有 HTTP 代理，GitHub SSH push 需走 HTTP 或加 SOCKS5
+

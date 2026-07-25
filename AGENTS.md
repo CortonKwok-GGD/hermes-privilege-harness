@@ -74,10 +74,10 @@ vip_sudo:
 
 ### Known issues (2026-07-25)
 
-1. **container not running** — container-apiserver down, hermes-run will auto-start system but container VM may not exist
+1. **container exec failures** — hermes-run uses three-tier retry (2s/60s/600s) without restarting the container; parallel tasks survive. ^C is forwarded into the container via trap+marker.
+2. **container VM may not exist** — container-apiserver auto-starts, but VM must be created manually via `container run`
 2. **config has 2 dev copies** — `hermes-plugin/config.yaml` is the canonical source; runtime version at `~/.hermes/plugins/hermes-vip/config.yaml` may diverge (provenance xattr prevents automated sync)
 3. **macOS provenance xattr** — blocks writes to `~/.hermes/plugins/` even as root; use host terminal to edit
-4. **`_handle_vipdaemon`** — previously used launchctl (broken for watchdog-managed daemon); now uses Unix socket ping
 5. **macos.py `apply_mount_acls()`** — dead code; ACL blocked by com.apple.provenance on macOS 26+
 
 ## Two Branches
@@ -98,7 +98,7 @@ vip_sudo:
 
 - **Dev in repo, deploy via dd/install script** — never edit deployed files directly
 - **macOS 26 SIP**: `/usr/local/bin/` is write-protected — use `dd if=src of=dst`
-- **Git push**: requires proxy (`ALL_PROXY=socks5://10.0.0.5:8888`) + workspace SSH key
+- **Git push**: via SSH; Gitee direct, GitHub may need proxy. For HTTP proxy: `git config --global http.https://github.com.proxy http://10.0.0.5:8888`
 - **Dual Hermes install**: workspace (`~/hermes-workspace/hermes-agent/`) vs runtime (`~/.hermes/hermes-agent/`) — Desktop auto-update wipes patches
 - **Sandbox testing**: Linux sandbox at `ssh admin@10.0.0.3`; macOS testing directly on Desktop
 
@@ -111,7 +111,7 @@ vip_sudo:
 | `hermes-plugin/sandbox/__init__.py` | Platform dispatch + config management | ~180 |
 | `hermes-plugin/sandbox/macos.py` | Wrap terminal → hermes-run (Apple container) | ~50 |
 | `hermes-plugin/sandbox/linux.py` | Wrap terminal → hermes-run (Docker) | ~60 |
-| `container/macos/hermes-run.sh` | Container lifecycle + volume mounts + exec | ~55 |
+| `container/macos/hermes-run.sh` | Container lifecycle + volume mounts + exec + signal cleanup | ~90 |
 | `daemon/socket_server.py` | Unix socket server with UID verification | ~450 |
 | `daemon/executor.py` | subprocess sudo executor | ~90 |
 | `daemon/vipd.py` | Daemon main entry | ~150 |
