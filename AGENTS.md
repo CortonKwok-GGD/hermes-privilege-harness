@@ -52,15 +52,24 @@ LLM calls tool
 
 ```yaml
 sandbox:
-  enabled: true / false       # Container sandbox on/off
-  network: true / false       # Network inside sandbox
-  mounts:                     # Paths mounted into container VM
-    - path: $HOME/hermes-workspace     # rw
-    - path: $HOME/.hermes/plugins/hermes-vip/config.yaml  # ro (LLM self-discovery)
-    - path: $HOME/.hermes/config.yaml  # ro
-    - path: $HOME/.hermes/profiles     # ro
+  enabled: true / false
+  network: true / false
+  container:                  # VM specs
+    name: hermes-vm
+    memory_mb: 2048
+  proxy:
+    socks5: socks5://192.168.64.1:1080  # Mac microsocks
+  retry:
+    intervals: [2, 60, 600]   # three-tier, no container restart
+  mounts:                     # host_path → container_path
+    - host_path: $HOME/.hermes/config.yaml          # ro
+    - host_path: $HOME/.hermes/profiles             # ro
+    - host_path: $HOME/hermes-workspace             # rw
+    - host_path: $HOME/hermes-runtime/bin → /usr/local/bin   # rw
+    - host_path: $HOME/hermes-runtime/data → /var/lib/hermes  # rw
+    - host_path: $HOME/hermes-runtime/log → /var/log/hermes   # rw
 vip_sudo:
-  enabled: true / false       # vip_sudo tool on/off
+  enabled: true / false
 ```
 
 ### Slash commands (main only)

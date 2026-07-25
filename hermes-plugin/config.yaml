@@ -1,20 +1,64 @@
-# VIP plugin configuration — sandbox mounts for container isolation.
-# Changes take effect on next Hermes chat session.
-# Paths support $HOME, ~ and environment variables.
+# Hermes VIP — runtime configuration
+# 修改后重启 Hermes Desktop 生效
 
+# ── 容器沙箱 ──
 sandbox:
   enabled: true
   network: true
 
+  # 容器 VM 规格
+  container:
+    name: hermes-vm
+    image: hermes-vm:latest
+    memory_mb: 2048
+    cpus: 4
+
+  # 代理（容器内设 ALL_PROXY 指向此地址即可）
+  proxy:
+    enabled: true
+    socks5: socks5://192.168.64.1:1080
+
+  # hermes-run 重试策略
+  retry:
+    intervals: [2, 60, 600]     # 秒级 → 分钟级 → 10分钟级
+    restart_container: false    # false: 只重试不重启，保护并行任务
+
+  # 卷挂载
+  #   host_path:      Mac 宿主机路径
+  #   container_path: 容器内路径
+  #   容器内默认 PATH 已包含 /usr/local/bin
   mounts:
-    - path: $HOME/hermes-workspace
-      writable: true
-    - path: $HOME/.hermes/plugins/hermes-vip/config.yaml
-      writable: false
-    - path: $HOME/.hermes/config.yaml
-      writable: false
-    - path: $HOME/.hermes/profiles
+
+    # ── 只读 ──
+    - host_path: $HOME/.hermes/config.yaml
+      container_path: $HOME/.hermes/config.yaml
       writable: false
 
+    - host_path: $HOME/.hermes/plugins/hermes-vip/config.yaml
+      container_path: $HOME/.hermes/plugins/hermes-vip/config.yaml
+      writable: false
+
+    - host_path: $HOME/.hermes/profiles
+      container_path: $HOME/.hermes/profiles
+      writable: false
+
+    # ── 读写 ──
+    - host_path: $HOME/hermes-workspace
+      container_path: $HOME/hermes-workspace
+      writable: true
+
+    - host_path: $HOME/hermes-runtime/bin
+      container_path: /usr/local/bin
+      writable: true
+
+    - host_path: $HOME/hermes-runtime/data
+      container_path: /var/lib/hermes
+      writable: true
+
+    - host_path: $HOME/hermes-runtime/log
+      container_path: /var/log/hermes
+      writable: true
+
+# ── 提权网关 ──
 vip_sudo:
   enabled: true
