@@ -93,27 +93,46 @@ for plist in \
     [ -f "$plist" ] && { rm -f "$plist"; echo "  🗑 清理 $plist"; }
 done
 
-# ── 0.5 容器沙箱 (hermes-run + 容器镜像) ──
+# ── 0.5 容器沙箱 + 运行时环境 ──
 echo ""
 echo "📦 安装容器沙箱..."
-if command -v /usr/local/bin/container &>/dev/null; then
-    # 容器镜像（存在则跳过构建；Apple container 是 per-user，以真实用户身份检查）
+if ! command -v /usr/local/bin/container &>/dev/null; then
+    echo -e "  ${YELLOW}⚠️  Apple container CLI 未安装（需 macOS 26+），跳过${NC}"
+else
+    # 0.5a. 创建 runtime 持久化目录
+    mkdir -p "$REAL_HOME/hermes-runtime/bin" "$REAL_HOME/hermes-runtime/data" "$REAL_HOME/hermes-runtime/log"
+    echo "  ✅ runtime 目录已创建"
+
+    # 0.5b. 部署 runtime config
+    mkdir -p "$HERMES_HOME/plugins/hermes-vip"
+    cp "$PROJECT_DIR/hermes-plugin/config.yaml" "$HERMES_HOME/plugins/hermes-vip/config.yaml"
+    echo "  ✅ config.yaml deployed"
+
+    # 0.5c. 容器镜像（存在则跳过构建）
     if sudo -u "$REAL_USER" /usr/local/bin/container list --all --quiet 2>/dev/null | grep -xq "hermes-vm"; then
-        echo "  ⏭  Container hermes-vm already exists, skipping build"
+        echo "  ⏭  Container hermes-vm already exists"
     else
-        echo "  🏗 Building hermes-vm image..."
-        /usr/local/bin/container build -t hermes-vm:latest --arch amd64 \
-            -f "$PROJECT_DIR/container/macos/Dockerfile.hermes-vm" "$PROJECT_DIR/container/macos/" 2>&1 || \
-        echo -e "  ${YELLOW}⚠️  Build failed (registry auth?), skipping${NC}"
+        if sudo -u "$REAL_USER" /usr/local/bin/container image inspect hermes-vm:latest &>/dev/null; then
+            echo "  ⏭  Image hermes-vm:latest exists, skipping build"
+        else
+            echo "  🏗 Building hermes-vm image..."
+            /usr/local/bin/container build -t hermes-vm:latest --arch amd64 \
+                -f "$PROJECT_DIR/container/macos/Dockerfile.hermes-vm" "$PROJECT_DIR/container/macos/" 2>&1 || \
+            echo -e "  ${YELLOW}⚠️  Build failed (registry auth?), skipping${NC}"
+        fi
     fi
-    # hermes-run 脚本（dd 部署到 /usr/local/bin/）
+
+    # 0.5d. hermes-run 脚本
     cp "$PROJECT_DIR/container/macos/hermes-run.sh" /tmp/hermes-run
     [ -f /usr/local/bin/hermes-run ] && rm -f /usr/local/bin/hermes-run
     dd if=/tmp/hermes-run of=/usr/local/bin/hermes-run 2>/dev/null
     chmod 755 /usr/local/bin/hermes-run
     echo "  ✅ hermes-run deployed"
-else
-    echo -e "  ${YELLOW}⚠️  Apple container CLI 未安装（需 macOS 26+），跳过${NC}"
+
+    # 0.5e. 容器重建（从 config.yaml 驱动）
+    if [ -f "$PROJECT_DIR/container/macos/rebuild.sh" ]; then
+        bash "$PROJECT_DIR/container/macos/rebuild.sh" 2>&1 || echo -e "  ${YELLOW}⚠️  Container rebuild failed${NC}"
+    fi
 fi
 
 # ── 1. _hermesvip 用户 ──
