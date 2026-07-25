@@ -1,0 +1,12 @@
+#!/bin/bash
+# post-merge — Git hook: after git pull, auto-apply VIP patches to Hermes core
+# 由 Hermes VIP deploy 流程安装到 hermes-agent/.git/hooks/post-merge
+#
+# idempotent: 重复执行安全，已注入的行跳过
+
+HERMES_REPO="${HERMES_REPO:-$HOME/hermes-workspace/hermes-agent}"
+PATCH_SCRIPT="$HOME/hermes-workspace/apps/hermes-vip/deploy/dd-patches.sh"
+
+if [ -f "$PATCH_SCRIPT" ]; then
+    bash "$PATCH_SCRIPT"
+fi

@@ -33,22 +33,29 @@ done
 [ -z "$VOLUME_ARGS" ] && VOLUME_ARGS="-v $HOME/hermes-workspace:$HOME/hermes-workspace"
 
 # --- Container lifecycle management ---
-# Three states: running / stopped / absent
+# 三种状态：运行中 / 已停止 / 不存在
+# 不存在时提示用户手动创建，不自动重建
 RUNNING=$(/usr/local/bin/container list --quiet 2>/dev/null | grep -x "$CNAME") || true
 if [ -z "$RUNNING" ]; then
     if /usr/local/bin/container list --quiet --all 2>/dev/null | grep -x "$CNAME" >/dev/null; then
-        # Exists but stopped → start
+        # 已停止 → 启动
         /usr/local/bin/container start "$CNAME" 2>&1
     else
-        # Does not exist → create
-        NET=""; [ "$NO_NET" = "1" ] && NET="--network none"
-        /usr/local/bin/container run -d --name "$CNAME" --arch amd64 $NET $VOLUME_ARGS \
-            hermes-vm:latest sleep infinity 2>&1 || {
-            echo "Error: failed to create container $CNAME" >&2; exit 1
-        }
+        echo "Error: container $CNAME does not exist. Run 'container run' manually." >&2
+        exit 1
     fi
 fi
 
 CMD="$*"
 printf '%s\n' "cd $HOME/hermes-workspace 2>/dev/null || true" "$CMD" \
-    | /usr/local/bin/container exec -i "$CNAME" sh
+    | /usr/local/bin/container exec -i "$CNAME" sh 2>&1 || {
+    # exec 失败（如容器半死）→ 重启后重试一次
+    echo "Warning: exec failed, restarting $CNAME and retrying..." >&2
+    /usr/local/bin/container restart "$CNAME" >/dev/null 2>&1
+    sleep 2
+    printf '%s\n' "cd $HOME/hermes-workspace 2>/dev/null || true" "$CMD" \
+        | /usr/local/bin/container exec -i "$CNAME" sh 2>&1 || {
+        echo "Error: failed to run in $CNAME" >&2
+        exit 1
+    }
+}

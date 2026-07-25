@@ -119,7 +119,12 @@ def _register_vip_sudo(ctx):
 
 
 def _hook(tool_name, args, **kwargs):
-    """pre_tool_call: delegate to guard.check()"""
+    """pre_tool_call: stringify all arg values, then delegate to guard.check()"""
+    # Hermes may pass int instead of str (e.g. {"query": 513050})
+    if isinstance(args, dict):
+        for k, v in args.items():
+            if not isinstance(v, str):
+                args[k] = str(v)
     return guard.check(tool_name, args if isinstance(args, dict) else {})
 
 
@@ -130,7 +135,7 @@ def _inject(**kwargs):
         net_on = sandbox.network_enabled()
         if sb_on and vs_on:
             msg = (
-                "[SYSTEM]: You are in a sandbox (bwrap). "
+                "[SYSTEM]: You are in a sandbox. "
                 "Terminal handles files, network, scripts — no approval needed. "
                 "vip_sudo is the only tool that requires approval."
             )
@@ -138,7 +143,7 @@ def _inject(**kwargs):
                 msg += " Network is isolated. Ask user for /vipsandbox net on if needed."
         elif sb_on and not vs_on:
             msg = (
-                "[SYSTEM]: You are in a sandbox (bwrap). "
+                "[SYSTEM]: You are in a sandbox. "
                 "Terminal handles files, network, scripts — no approval needed. "
                 "vip_sudo is disabled — ask user for /vipsudo on if needed."
             )
@@ -206,24 +211,22 @@ def _handle_vipsudo(args: str) -> str:
 
 
 def _handle_vipdaemon(_args: str = "") -> str:
-    """Show daemon status (read-only). macOS=launchctl, Linux=systemctl."""
+    """Show daemon status via Unix socket connectivity."""
+    import json, struct, socket
     try:
-        if sys.platform == "darwin":
-            r = subprocess.run(
-                ["launchctl", "list"], capture_output=True, text=True, timeout=5,
-            )
-            status = "active" if "hermes-vip" in r.stdout else "not loaded"
-        else:
-            r = subprocess.run(
-                ["systemctl", "is-active", "hermes-vipd"],
-                capture_output=True, text=True, timeout=5,
-            )
-            status = r.stdout.strip()
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.settimeout(3)
+        s.connect('/var/run/hermes-vip/request.sock')
+        req = json.dumps({'type': 'ping'}).encode()
+        s.sendall(struct.pack('!I', len(req)) + req)
+        data = s.recv(4)
+        s.close()
+        status = 'active' if len(data) == 4 else 'unknown'
+    except FileNotFoundError:
+        status = 'stopped'
+    except (ConnectionRefusedError, OSError):
+        status = 'stopped'
     except Exception:
-        status = "unknown"
-    return (
-        f"VIP daemon: {status}\n"
-        f"Start:   sudo systemctl start hermes-vipd    (manually)\n"
-        f"Stop:    sudo systemctl stop hermes-vipd     (manually)\n"
-        f"Status:  sudo systemctl status hermes-vipd  (manually)"
-    )
+        status = 'unknown'
+    return f'VIP daemon: {status}'
+

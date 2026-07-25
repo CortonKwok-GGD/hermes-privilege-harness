@@ -625,3 +625,37 @@ macOS (本地):       hermes-run → sudo -u _hermes bash -c (sandbox-exec --no-
 ```
 
 双平台统一入口 `hermes-run`，底层实现不同但接口一致。
+
+
+---
+
+## 2026-07-25 — 项目文档整理
+
+### container/ 合并清理
+- 删除 container/ 独立文档 (AGENTS.md/WBS.md/README.md/.gitignore)
+- 删除 container/config/ 多余 config 文件
+- hermes-plugin/config.yaml 为唯一 config 源
+- container/ 现在只保留运行时文件: macos/hermes-run.sh, Dockerfile, install.sh
+
+### 代码修复
+- plugin.yaml version 0.1.0 → 1.0.0, 移除 post_tool_call hook
+- __init__.py::_inject() 移除 (bwrap) 描述
+- __init__.py::_handle_vipdaemon 改用 socket ping 替代 launchctl
+- hermes-plugin/config.yaml 精简 mounts
+
+### 文档重写
+- README.md: 两分支全景 + 架构图
+- AGENTS.md: 三子系统 + 快速上手指南
+
+### 归档
+- isolation-status.md → docs/archived/
+- connectors/ → docs/archived/
+
+### container/ 踩坑记录 (从 container/WBS.md 合并)
+- macOS 26 SIP: /usr/local/bin/ 禁止 cp/install/tee, 用 dd if=src of=dst
+- provenance xattr: ~/.hermes/plugins/ 下 root 也无法写入
+- VZ 文件不同步: 容器→宿主机方向有延迟
+- container list 无 --filter: 用 grep -x
+- XPC 绑定 Aqua session: daemon 无法调 container CLI
+- 多架构镜像: docker save 缺 blob, index.json 只保留 amd64
+- pyyaml 缺失: pip3 install pyyaml (hermes-run 宿主机执行)
