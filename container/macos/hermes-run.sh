@@ -46,16 +46,35 @@ if [ -z "$RUNNING" ]; then
     fi
 fi
 
-CMD="$*"
-printf '%s\n' "cd $HOME/hermes-workspace 2>/dev/null || true" "$CMD" \
-    | /usr/local/bin/container exec -i "$CNAME" sh 2>&1 || {
-    # exec 失败（如容器半死）→ 重启后重试一次
-    echo "Warning: exec failed, restarting $CNAME and retrying..." >&2
-    /usr/local/bin/container restart "$CNAME" >/dev/null 2>&1
-    sleep 2
-    printf '%s\n' "cd $HOME/hermes-workspace 2>/dev/null || true" "$CMD" \
-        | /usr/local/bin/container exec -i "$CNAME" sh 2>&1 || {
-        echo "Error: failed to run in $CNAME" >&2
-        exit 1
-    }
+# Signal trap — 向容器内转发 ^C
+MARKER="/tmp/hrm-$$.pid"
+
+cleanup() {
+    echo "" >&2
+    echo "  ^C received, terminating..." >&2
+    /usr/local/bin/container exec -i "$CNAME" sh -c \
+        "kill \$(cat $MARKER 2>/dev/null) 2>/dev/null; rm -f $MARKER" 2>/dev/null || true
+    exit 1
 }
+trap cleanup INT TERM
+
+CMD="$*"
+INPUT=$(printf '%s\n' \
+    "echo \$\$ > $MARKER" \
+    "cd \$HOME/hermes-workspace 2>/dev/null || true" \
+    "$CMD; rc=\$?; rm -f $MARKER; exit \$rc")
+
+# 执行命令
+echo "$INPUT" | /usr/local/bin/container exec -i "$CNAME" sh 2>&1 && exit 0
+
+# 三阶梯重试（不重启，等容器自行恢复）
+for delay in 2 60 600; do
+    echo "Warning: exec failed, retrying in ${delay}s..." >&2
+    sleep "$delay"
+    if echo "$INPUT" | /usr/local/bin/container exec -i "$CNAME" sh 2>&1; then
+        exit 0
+    fi
+done
+
+echo "Error: exec failed after 3 retries, $CNAME may need manual restart" >&2
+exit 1

@@ -93,21 +93,25 @@ for plist in \
     [ -f "$plist" ] && { rm -f "$plist"; echo "  🗑 清理 $plist"; }
 done
 
-# 0c. 清理旧 socket
-rm -f "$VIP_RUN/request.sock" "$VIP_RUN/control.sock" 2>/dev/null || true
-
-echo "  ✅ 清理完成"
-
 # ── 0.5 容器沙箱 (hermes-run + 容器镜像) ──
 echo ""
-echo "📦 安装容器沙箱 (Apple container CLI)..."
+echo "📦 安装容器沙箱..."
 if command -v /usr/local/bin/container &>/dev/null; then
-    CONTAINER_SH="$PROJECT_DIR/container/macos/install.sh"
-    if [ -f "$CONTAINER_SH" ]; then
-        bash "$CONTAINER_SH"
+    # 容器镜像（存在则跳过构建；Apple container 是 per-user，以真实用户身份检查）
+    if sudo -u "$REAL_USER" /usr/local/bin/container list --all --quiet 2>/dev/null | grep -xq "hermes-vm"; then
+        echo "  ⏭  Container hermes-vm already exists, skipping build"
     else
-        echo -e "  ${YELLOW}⚠️  未找到 container/macos/install.sh，跳过${NC}"
+        echo "  🏗 Building hermes-vm image..."
+        /usr/local/bin/container build -t hermes-vm:latest --arch amd64 \
+            -f "$PROJECT_DIR/container/macos/Dockerfile.hermes-vm" "$PROJECT_DIR/container/macos/" 2>&1 || \
+        echo -e "  ${YELLOW}⚠️  Build failed (registry auth?), skipping${NC}"
     fi
+    # hermes-run 脚本（dd 部署到 /usr/local/bin/）
+    cp "$PROJECT_DIR/container/macos/hermes-run.sh" /tmp/hermes-run
+    [ -f /usr/local/bin/hermes-run ] && rm -f /usr/local/bin/hermes-run
+    dd if=/tmp/hermes-run of=/usr/local/bin/hermes-run 2>/dev/null
+    chmod 755 /usr/local/bin/hermes-run
+    echo "  ✅ hermes-run deployed"
 else
     echo -e "  ${YELLOW}⚠️  Apple container CLI 未安装（需 macOS 26+），跳过${NC}"
 fi
@@ -196,7 +200,7 @@ echo "📦 安装 daemon..."
 rm -rf "$VIP_LIB" 2>/dev/null || true
 mkdir -p "$VIP_LIB/daemon" "$VIP_LIB/connectors"
 cp "$PROJECT_DIR/daemon/"*.py "$VIP_LIB/daemon/"
-cp "$PROJECT_DIR/connectors/"*.py "$VIP_LIB/connectors/"
+[ -d "$PROJECT_DIR/connectors" ] && cp "$PROJECT_DIR/connectors/"*.py "$VIP_LIB/connectors/" 2>/dev/null || true
 touch "$VIP_LIB/__init__.py"
 chmod -R 755 "$VIP_LIB"
 chown -R root:wheel "$VIP_LIB"
@@ -222,7 +226,7 @@ chown root:wheel "$VIP_ETC"
 chown "$VIP_USER:daemon" "$VIP_RUN" "$VIP_LOG"
 [ -f "$VIP_ETC/config.yaml" ] || {
     cp "$PROJECT_DIR/examples/config.yaml" "$VIP_ETC/config.yaml"
-    chmod 600 "$VIP_ETC/config.yaml"
+    chmod 644 "$VIP_ETC/config.yaml"
     chown root:wheel "$VIP_ETC/config.yaml"
 }
 echo "  ✅ 目录就绪"
@@ -300,7 +304,8 @@ echo "🔌 安装 Plugin..."
 PDIR="$HERMES_HOME/plugins/hermes-vip"
 rm -rf "$PDIR" 2>/dev/null || true
 sudo -u "$REAL_USER" mkdir -p "$PDIR"
-sudo -u "$REAL_USER" cp "$PROJECT_DIR/hermes-plugin/"* "$PDIR/"
+sudo -u "$REAL_USER" cp -R "$PROJECT_DIR/hermes-plugin/"* "$PDIR/"
+sudo -u "$REAL_USER" rm -rf "$PDIR/__pycache__" 2>/dev/null || true
 rm -rf "$PDIR/__pycache__" 2>/dev/null || true
 echo "  ✅ Plugin 文件: $PDIR"
 
@@ -334,20 +339,14 @@ fi
 echo ""
 echo "🔗 配置 workspace 共享组..."
 WS_GROUP="hermes-shared"
-
-if ! getent group "$WS_GROUP" &>/dev/null; then
-    groupadd -f "$WS_GROUP" 2>/dev/null || pw groupadd "$WS_GROUP" 2>/dev/null || true
-fi
-
-usermod -a -G "$WS_GROUP" "$REAL_USER" 2>/dev/null || \
-    dseditgroup -o edit -a "$REAL_USER" -t user "$WS_GROUP" 2>/dev/null || true
-SHARED_MSG="$REAL_USER（_hermes 通过 ACL 控制，不加入共享组）"
+dseditgroup -o read "$WS_GROUP" &>/dev/null || dseditgroup -o create "$WS_GROUP" 2>/dev/null || true
+dseditgroup -o edit -a "$REAL_USER" -t user "$WS_GROUP" 2>/dev/null || true
 
 WS_DIR="$REAL_HOME/hermes-workspace"
 if [ -d "$WS_DIR" ]; then
-    chgrp -R "$WS_GROUP" "$WS_DIR" 2>/dev/null
-    chmod -R g+rwX "$WS_DIR" 2>/dev/null
-    echo "  ✅ workspace 权限已配置（$SHARED_MSG）"
+    chgrp -R "$WS_GROUP" "$WS_DIR" 2>/dev/null || true
+    chmod -R g+rwX "$WS_DIR" 2>/dev/null || true
+    echo "  ✅ workspace 权限已配置"
 else
     echo "  ⏭  $WS_DIR 不存在，跳过"
 fi

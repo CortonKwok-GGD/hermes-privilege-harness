@@ -153,7 +153,7 @@ echo "📦 安装 daemon..."
 rm -rf "$VIP_LIB" 2>/dev/null || true
 mkdir -p "$VIP_LIB/daemon" "$VIP_LIB/connectors"
 cp "$PROJECT_DIR/daemon/"*.py "$VIP_LIB/daemon/"
-cp "$PROJECT_DIR/connectors/"*.py "$VIP_LIB/connectors/"
+[ -d "$PROJECT_DIR/connectors" ] && cp "$PROJECT_DIR/connectors/"*.py "$VIP_LIB/connectors/" 2>/dev/null || true
 touch "$VIP_LIB/__init__.py"
 chmod -R 755 "$VIP_LIB"
 echo "  ✅ daemon 代码: $VIP_LIB"
@@ -236,7 +236,8 @@ echo "🔌 安装 Plugin..."
 PDIR="$HERMES_HOME/plugins/hermes-vip"
 rm -rf "$PDIR" 2>/dev/null || true
 sudo -u "$REAL_USER" mkdir -p "$PDIR"
-sudo -u "$REAL_USER" cp "$PROJECT_DIR/hermes-plugin/"* "$PDIR/"
+sudo -u "$REAL_USER" cp -R "$PROJECT_DIR/hermes-plugin/"* "$PDIR/"
+sudo -u "$REAL_USER" rm -rf "$PDIR/__pycache__" 2>/dev/null || true
 rm -rf "$PDIR/__pycache__" 2>/dev/null || true
 echo "  ✅ Plugin 文件: $PDIR"
 

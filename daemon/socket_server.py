@@ -66,6 +66,7 @@ MSG_APPROVAL_RESPONSE = "approval_response"
 MSG_REGISTER = "register"
 MSG_LIST_PENDING = "list_pending"
 MSG_GET_RESULT = "get_result"
+MSG_PING = "ping"
 MSG_SUDO_EXECUTE = "sudo_execute"
 
 # ── 结果缓存 ──
@@ -357,6 +358,12 @@ class SocketServer:
                 self._handle_sudo_request(client, req)
             elif req_type == MSG_SUDO_EXECUTE:
                 self._handle_sudo_execute(client, req)
+            elif req_type == MSG_PING:
+                _send_json(client, {
+                    "status": "ok",
+                    "daemon": "hermes-vipd",
+                    "platform": "darwin",
+                })
             else:
                 _send_json(client, {
                     "status": "error",

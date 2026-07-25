@@ -167,17 +167,23 @@ def _register_builtin_connectors(server: SocketServer, config: dict):
     """Register builtin connectors"""
     connectors_cfg = config.get("connectors", {})
 
-    # CLI connector (always enabled)
-    if connectors_cfg.get("cli", {}).get("enabled", True):
-        from connectors.cli import send_approval
-        server.register_connector("cli", send_approval)
-        logger.info("connector 'cli' enabled")
+    # CLI connector (optional)
+    try:
+        if connectors_cfg.get("cli", {}).get("enabled", True):
+            from connectors.cli import send_approval
+            server.register_connector("cli", send_approval)
+            logger.info("connector 'cli' enabled")
+    except ImportError:
+        logger.debug("connectors.cli not available, skipping")
 
-    # hermes_gateway connector
-    if connectors_cfg.get("hermes_gateway", {}).get("enabled", True):
-        from connectors.hermes_gateway import send_approval
-        server.register_connector("hermes_gateway", send_approval)
-        logger.info("connector 'hermes_gateway' enabled")
+    # hermes_gateway connector (optional)
+    try:
+        if connectors_cfg.get("hermes_gateway", {}).get("enabled", True):
+            from connectors.hermes_gateway import send_approval
+            server.register_connector("hermes_gateway", send_approval)
+            logger.info("connector 'hermes_gateway' enabled")
+    except ImportError:
+        logger.debug("connectors.hermes_gateway not available, skipping")
 
 
 if __name__ == "__main__":
