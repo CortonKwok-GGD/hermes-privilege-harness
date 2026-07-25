@@ -20,6 +20,7 @@ Socket Server — Unix socket 服务
 """
 
 import json
+import sys
 import logging
 import os
 import socket
@@ -362,7 +363,7 @@ class SocketServer:
                 _send_json(client, {
                     "status": "ok",
                     "daemon": "hermes-vipd",
-                    "platform": "darwin",
+                    "platform": sys.platform,
                 })
             else:
                 _send_json(client, {
