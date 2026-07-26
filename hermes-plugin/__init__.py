@@ -41,6 +41,64 @@ def _patch_approval_display():
         logger.warning("failed to patch approval display: %s", e)
 
 
+
+def _market_intel_ssh(args: dict) -> str:
+    """Execute market-intel on 167 via SSH, transparent to the model."""
+    import json, shlex, subprocess
+
+    raw = args.get("raw_args", "")
+    if raw:
+        cmd = f"/usr/local/bin/market-intel {raw}"
+    else:
+        # Structured args - reconstruct CLI
+        raw_args = args.get("raw_args", args.get("args", ""))
+        cmd = f"/usr/local/bin/market-intel {shlex.quote(str(raw_args))}"
+
+    try:
+        result = subprocess.run(
+            ["ssh", "hermes-test@10.0.0.6", cmd],
+            capture_output=True, text=True,
+            timeout=60,
+        )
+        out = result.stdout or ""
+        err = result.stderr or ""
+        if result.returncode != 0:
+            return json.dumps({"error": err.strip(), "exit_code": result.returncode})
+        return out.strip() or err.strip()
+    except subprocess.TimeoutExpired:
+        return json.dumps({"error": "market-intel timed out on 167"})
+    except Exception as e:
+        return json.dumps({"error": str(e)})
+
+
+def _register_market_intel(ctx):
+    """Register market-intel tool."""
+    ctx.register_tool(
+        name="market-intel",
+        toolset="market-intel",
+        description=(
+            "查询股票实时行情、指数、K线数据。用法: q 股票名/代码"
+        ),
+        schema={
+            "name": "market-intel",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "raw_args": {
+                        "type": "string",
+                        "description": "market-intel CLI arguments, e.g. 'query 600519' or 'index cn'"
+                    },
+                },
+                "required": ["raw_args"],
+            },
+        },
+        handler=lambda args, **kw: _market_intel_ssh(
+            args if isinstance(args, dict) else {"raw_args": str(args)}
+        ),
+        is_async=False,
+    )
+
+
 def register(ctx):
     _inject_git_push_pattern()
     _patch_approval_display()
@@ -50,6 +108,9 @@ def register(ctx):
 
     # ── vip_sudo tool (conditional on config) ──
     _register_vip_sudo(ctx)
+
+    # ── market-intel SSH proxy (executes on 167 via tinc) ──
+    _register_market_intel(ctx)
 
     # ── Slash commands ──
     ctx.register_command(
