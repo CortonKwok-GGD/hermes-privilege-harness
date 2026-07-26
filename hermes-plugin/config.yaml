@@ -43,25 +43,10 @@ sandbox:
       writable: false
 
     # ── 读写 ──
-    # 根文件系统持久化（重建不丢）
+    # 根文件系统持久化（hermes-vm-root 直挂 /，重建不丢）
+    # workspace、bin、data、log 全部在根内，不需要额外挂载
     - host_path: $HOME/hermes-vm-root
       container_path: /
-      writable: true
-
-    - host_path: $HOME/hermes-workspace
-      container_path: $HOME/hermes-workspace
-      writable: true
-
-    - host_path: $HOME/hermes-runtime/bin
-      container_path: /usr/local/bin
-      writable: true
-
-    - host_path: $HOME/hermes-runtime/data
-      container_path: /var/lib/hermes
-      writable: true
-
-    - host_path: $HOME/hermes-runtime/log
-      container_path: /var/log/hermes
       writable: true
 
 # ── 提权网关 ──
