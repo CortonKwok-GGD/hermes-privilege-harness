@@ -43,6 +43,11 @@ sandbox:
       writable: false
 
     # ── 读写 ──
+    # 根文件系统持久化（重建不丢）
+    - host_path: $HOME/hermes-vm-root
+      container_path: /
+      writable: true
+
     - host_path: $HOME/hermes-workspace
       container_path: $HOME/hermes-workspace
       writable: true
