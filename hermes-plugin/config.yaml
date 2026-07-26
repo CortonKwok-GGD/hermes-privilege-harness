@@ -1,5 +1,5 @@
 # Hermes VIP — runtime configuration
-# 修改后重启 Hermes Desktop 生效
+# 修改后重启 Hermes Desktop 生效，MacOS container cli需要重建vm才能生效，注意容器里面没有写在挂载读写目录的数据会丢失。建议挂载一个宿主机的目录到容器根目录。
 
 # ── 容器沙箱 ──
 sandbox:
@@ -12,11 +12,6 @@ sandbox:
     image: hermes-vm:latest
     memory_mb: 2048
     cpus: 4
-
-  # 代理（容器内设 ALL_PROXY 指向此地址即可）
-  proxy:
-    enabled: true
-    socks5: socks5://192.168.64.1:1080
 
   # hermes-run 重试策略
   retry:
