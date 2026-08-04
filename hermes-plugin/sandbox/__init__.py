@@ -128,54 +128,27 @@ def _get_sandbox_mounts() -> list[tuple[str, str, str]]:
 
 
 def sandbox_available() -> bool:
-    """Check if _hermes user exists and sudo works."""
-    try:
-        r = subprocess.run(["id", "_hermes"], capture_output=True, text=True, timeout=5)
-        if r.returncode == 0:
-            # Verify sudo works
-            r2 = subprocess.run(["sudo", "-u", "_hermes", "whoami"], capture_output=True, text=True, timeout=5)
-            return r2.returncode == 0 and "_hermes" in r2.stdout
-    except Exception:
-        pass
-    return False
+    """Unified: sandbox available when hermes-run + ctl are deployed."""
+    return os.path.exists("/usr/local/bin/hermes-run") and \
+           os.path.exists("/usr/local/bin/hermes-container-ctl")
 
 
 def build_sandbox_cmd(command: str) -> str:
-    """Wrap a shell command in _hermes user sandbox.
-    File isolation via _hermes user (both platforms).
-    Network isolation: Linux=iptables (system-wide), macOS=sandbox-exec (per-command)."""
-    if IS_LINUX:
-        from . import linux as sb
-        return sb._build_linux_cmd(command)
-    elif IS_MACOS:
-        from . import macos as sb
-        return sb._build_macos_cmd(command, network_enabled())
-    return command
+    """Wrap a shell command in the container sandbox (unified docker|apple).
+    All platforms route via hermes-run -> hermes-container-ctl.
+    Network isolation via --no-net (separate --network none container)."""
+    quoted = shlex.quote(command)
+    if network_enabled():
+        return "/usr/local/bin/hermes-run " + quoted
+    return "/usr/local/bin/hermes-run --no-net " + quoted
 
 
 def apply_mount_permissions():
-    """Apply filesystem ACLs from config.yaml sandbox.mounts for _hermes user.
-    Clears stale ACLs on listed paths, sets read/write per writable flag.
-    Paths not in the mount list are not touched."""
-    mounts = _get_sandbox_mounts()
-    if not mounts:
-        logger.debug("no sandbox mounts configured, skipping ACL setup")
-        return
-    if IS_MACOS:
-        from . import macos as sb
-        sb.apply_mount_acls(mounts)
-    elif IS_LINUX:
-        from . import linux as sb
-        sb.apply_mount_acls(mounts)
-    logger.info("mount ACLs applied: %d paths", len(mounts))
+    """No-op since v9 unified: volume mounts (-v) are configured at container
+    creation by hermes-container-ctl. No host-side ACLs needed."""
 
 
 def apply_network_state():
-    """Apply network state from config. Linux: iptables. macOS: no-op."""
-    net_on = network_enabled()
-    if IS_LINUX:
-        from . import linux as sb
-        sb.apply_network(net_on)
-    elif IS_MACOS:
-        from . import macos as sb
-        sb.apply_network(net_on)
+    """No-op: network isolation is per-container via --network none
+    (hermes-vm-no-net), selected by hermes-run --no-net at exec time."""
+

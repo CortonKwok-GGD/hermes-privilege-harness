@@ -132,6 +132,7 @@ def register(ctx):
 
     # ── pre_llm_call: tell LLM about sandbox ──
     ctx.register_hook("pre_llm_call", _inject)
+    ctx.register_hook("transform_terminal_output", _transform_terminal_output)
     logger.info("hermes-vip plugin registered")
     # Apply network state from config on session start
     sandbox.apply_network_state()
@@ -188,6 +189,24 @@ def _hook(tool_name, args, **kwargs):
             if not isinstance(v, str):
                 args[k] = str(v)
     return guard.check(tool_name, args if isinstance(args, dict) else {})
+
+
+
+def _transform_terminal_output(command="", output="", returncode=0, task_id="", env_type="", **_):
+    """Annotate terminal output with container-sandbox context.
+    LLM sees that results come from the isolated container: only mounted
+    paths are visible, and network state is on/off."""
+    if not sandbox.sandbox_enabled():
+        return None
+    if not isinstance(output, str) or not output.strip():
+        return None
+    cmd = command or ""
+    if "hermes-run" not in cmd:
+        return None
+    if output.lstrip().startswith("[hermes-run"):
+        return None
+    net = "on" if sandbox.network_enabled() else "off"
+    return f"[hermes-run container sandbox] net={net} - output from isolated container; only mounted paths visible\n" + output
 
 
 def _inject(**kwargs):

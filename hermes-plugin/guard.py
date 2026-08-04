@@ -60,13 +60,6 @@ def _vipsudo_block_message() -> str:
 
 # ── sudo / git push patterns ──
 
-SUDO_PATTERNS = [
-    re.compile(r"\bsudo\b", re.IGNORECASE),
-    re.compile(r"\bdoas\b", re.IGNORECASE),
-    re.compile(r"\bpkexec\b", re.IGNORECASE),
-    re.compile(r"\bsu\s+-", re.IGNORECASE),
-    re.compile(r"""['"]sudo['"]""", re.IGNORECASE),
-]
 
 _SSH_REMOTE_RE = re.compile(
     r"(?:^|\s)ssh\s+(?:-[a-zA-Z0-9]+(?:=\S+)?\s+)*(?:\S+@)?\S+\s+", re.IGNORECASE
@@ -79,13 +72,11 @@ def _is_git_push_operation(command: str) -> bool:
     return bool(_GIT_PUSH_RE.search(command))
 
 
-def _has_privilege_escalation(command: str) -> bool:
-    if _SSH_REMOTE_RE.search(command):
-        return False
-    for pat in SUDO_PATTERNS:
-        if pat.search(command):
-            return True
-    return False
+# Data-container false-positive guard
+_ESCAPE_RE = re.compile(
+    r"\||&&|;|\$\s*\(|`|>\||\bexec\b|\beval\b|\bxargs\b",
+    re.IGNORECASE,
+)
 
 
 # ── Stamp verification ──
@@ -96,13 +87,22 @@ _cap_registered: bool = False
 _stamps: dict[str, tuple[str, float]] = {}
 
 
-
-
-# Data-container false-positive guard
-_ESCAPE_RE = re.compile(
-    r"\||&&|;|\$\s*\(|`|>\(|\bexec\b|\beval\b|\bxargs\b",
+_HIGH_CONF_PRIVILEGE_RE = re.compile(
+    "(?:^|\n)\s*(?:sudo|doas|pkexec|su\s+-)\s+",
     re.IGNORECASE,
 )
+
+
+def _has_privilege_escalation(command: str) -> bool:
+    """High-confidence privilege escalation: a privilege keyword at the START
+    of a command line. Low-confidence occurrences (keyword inside data or
+    arguments) fall through to the container, where the command runs as root
+    anyway — no privilege gain, no escape."""
+    if _SSH_REMOTE_RE.search(command):
+        return False
+    if _is_inert_data_write(command):
+        return False
+    return bool(_HIGH_CONF_PRIVILEGE_RE.search(command))
 
 
 def _is_inert_heredoc(command: str) -> bool:
@@ -316,7 +316,7 @@ def check(tool_name: str, args: dict, **kw) -> dict | None:
     # ── 出路 1: 子进程 → bwrap 包装，透明放行 ──
     if tool_name == "terminal":
         cmd = args.get("command", "")
-        if _has_privilege_escalation(cmd) and not _is_inert_data_write(cmd):
+        if _has_privilege_escalation(cmd):
             if vs_on:
                 return {"action": "block", "message": _sudo_block_message()}
             return None  # system sudo

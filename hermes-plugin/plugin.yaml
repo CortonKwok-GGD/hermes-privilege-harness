@@ -6,3 +6,4 @@ license: MIT
 platforms: [macos, linux]
 hooks:
   - pre_tool_call
+  - transform_terminal_output
