@@ -155,16 +155,26 @@ cmd_exec() {
 
     exec_once() {
         echo "$input" | $SUDO_PREFIX $CLI exec -i $EXEC_USER_FLAG "$cname" sh 2>&1
+        return ${PIPESTATUS[1]:-0}
     }
 
-    exec_once && exit 0
+    local rc
+    exec_once; rc=$?
+    [ "$rc" -eq 0 ] && exit 0
+    # Only retry exec-layer failures (docker rc=125); command failures (1-127)
+    # are the container command's own exit code and must NOT trigger retries.
+    if [ "$rc" -ne 125 ]; then
+        exit "$rc"
+    fi
     local delay
     for delay in $RETRY_INT; do
-        echo "Warning: exec failed, retrying in ${delay}s..." >&2
+        echo "Warning: exec connection failed, retrying in ${delay}s..." >&2
         sleep "$delay"
-        exec_once && exit 0
+        exec_once; rc=$?
+        [ "$rc" -eq 0 ] && exit 0
+        [ "$rc" -ne 125 ] && exit "$rc"
     done
-    echo "Error: exec failed after retries, $cname may need manual restart" >&2
+    echo "Error: exec connection failed after retries, $cname may need manual restart" >&2
     exit 1
 }
 
@@ -197,8 +207,9 @@ cmd_rebuild() {
 cmd_build() {
     local dockerfile="${CTL_DIR}/Dockerfile.hermes-vm"
     [ -f "$dockerfile" ] || dockerfile="${CTL_DIR}/macos/Dockerfile.hermes-vm"
-    echo "Building image from $dockerfile (driver=$DRIVER)"
-    $SUDO_PREFIX $CLI build $BUILD_ARCH_FLAG -f "$dockerfile" "$(dirname "$dockerfile")"
+    read_config_vals
+    echo "Building image $IMG from $dockerfile (driver=$DRIVER)"
+    $SUDO_PREFIX $CLI build $BUILD_ARCH_FLAG -t "$IMG" -f "$dockerfile" "$(dirname "$dockerfile")"
 }
 
 cmd_list() {
