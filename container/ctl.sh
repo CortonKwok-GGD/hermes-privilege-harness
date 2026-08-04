@@ -62,7 +62,7 @@ CFG="${VIP_CFG:-$HOME/.hermes/plugins/hermes-vip/config.yaml}"
 
 # 输出: name image memory_mb cpus workdir vols retry_intervals
 read_config() {
-    python3 - "$CFG" <<'PYEOF'
+    HERMES_DRIVER="$DRIVER" python3 - "$CFG" <<'PYEOF'
 import os, sys, yaml
 cfg_path = sys.argv[1]
 c = {}
@@ -78,11 +78,14 @@ mem = cont.get('memory_mb', 2048)
 cpu = cont.get('cpus', 2)
 workdir = sb.get('workdir', '/hermes-workspace')
 vols = []
+driver = os.environ.get('HERMES_DRIVER', 'docker')
 for m in sb.get('mounts', []):
     h = os.path.expandvars(os.path.expanduser(m.get('host_path', '')))
     g = os.path.expandvars(os.path.expanduser(m.get('container_path', '')))
     if not h or not g:
         continue
+    if g == '/' and driver == 'docker':
+        continue  # docker 不允许 bind mount 到 /（Apple container 支持根替换）
     r = ':ro' if not m.get('writable', True) else ''
     vols.append(f'-v {h}:{g}{r}')
 retry = sb.get('retry', {}).get('intervals', [2, 60, 600])
@@ -153,8 +156,10 @@ cmd_exec() {
         "$cmd" \
         "rc=\$?; rm -f $marker; exit \$rc")
 
+    EXEC_ENV=""
+    [ "$DRIVER" = "docker" ] && EXEC_ENV="-e HOME=$HOME"
     exec_once() {
-        echo "$input" | $SUDO_PREFIX $CLI exec -i $EXEC_USER_FLAG "$cname" sh 2>&1
+        echo "$input" | $SUDO_PREFIX $CLI exec -i $EXEC_ENV $EXEC_USER_FLAG "$cname" sh 2>&1
         return ${PIPESTATUS[1]:-0}
     }
 

@@ -37,9 +37,15 @@ sandbox:
       container_path: $HOME/.hermes/profiles
       writable: false
 
+
     # ── 读写 ──
-    # 根文件系统持久化（hermes-vm-root 直挂 /，重建不丢）
-    # workspace、bin、data、log 全部在根内，不需要额外挂载
+    # workspace 独立挂载（docker 无法挂 /, 此挂载保证两端一致）
+    - host_path: $HOME/hermes-workspace
+      container_path: $HOME/hermes-workspace
+      writable: true
+
+    # 根文件系统持久化（Apple container 专用: hermes-vm-root 直挂 /）
+    # docker 由 ctl.sh 自动跳过此挂载
     - host_path: $HOME/hermes-vm-root
       container_path: /
       writable: true
