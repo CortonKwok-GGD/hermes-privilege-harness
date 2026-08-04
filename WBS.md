@@ -687,3 +687,106 @@ macOS (本地):       hermes-run → sudo -u _hermes bash -c (sandbox-exec --no-
 - **10.0.0.0/24 网络**：容器内不可达（Apple bridge100 NAT 只到 en0/en1，不转发 tinc 接口 utun5）。PF 转发方案已分析但未部署（`pfctl -f` 会冲掉动态锚点）
 - **新加坡 VPS SOCKS5**：只有 HTTP 代理，GitHub SSH push 需走 HTTP 或加 SOCKS5
 
+
+---
+
+## 2026-08-04 — PR #63066 安全修复 + macOS 部署整改
+
+### 背景
+
+@tneemo 08-03 review PR #63066（Hermes Privilege Harness，passive-vip 社区版）：
+stamp 机制是「自证」（客户端自铸 secret+nonce），approval 队列可被完全绕过，
+合入前需重大安全返工。A（架构修复）+ B（EXPERIMENTAL 声明）都要修。
+
+### PR 修复（head 373bc92 → 0e7639202）
+
+| 文件 | 变更 |
+|------|------|
+| daemon/socket_server.py | request.sock accept 即 SO_PEERCRED 校验（非 TRUSTED_UIDS 直接拒）；stamp_init 由 daemon 签发 cap（os.urandom(32)）绑定 peer_uid，客户端不能自铸；sudoexec 三重校验（cap 归属 + HMAC-SHA256(command,cap) + peer）；移除 200 注册上限 clear，cap 按 peer 单发轮换；socket 0660 |
+| hermes-plugin/guard.py | _stamps 存完整命令 sha256 key + TTL + HMAC 值比较（原 command[:120] 前缀成员检查可绕过）；_register_stamp_cap() 启动时向 daemon 要 cap |
+| install.sh | 显式建组、socket 0660、config.yaml 生成（trusted_user 必需，否则 systemd 下 TRUSTED_UIDS={0} 插件连不上）、sudoers、插件自动安装 |
+| README.md | EXPERIMENTAL banner（B 方案，defense-in-depth 非 root 安全边界）+ 权限模型修正 |
+| config.yaml.tmpl | 新增 daemon 配置模板 |
+
+### 167 (Ubuntu 24.04) 验证全过
+
+- 合法链路 stamp_init → sudoexec → `id -u` = 0
+- 伪造 cap / 错 stamp / 无 cap / cap 轮换后旧 cap 全拒
+- **www-data 加入 hermes-vip 组后仍被 SO_PEERCRED 层拒**（connection reset + 日志 rejected untrusted UID: 33）—— 评审要的兜底
+- guard: 前缀替换 / stamp 后改命令 / 单次消费 全拒
+- Hermes 会话端到端 --yolo 返回 0
+
+### dev repo 两分支同步
+
+**passive-vip = PR 完全镜像**（用户明确：passive-vip 分支存在的意义就是与 PR 一致，不许有 PR 没有的额外逻辑）：
+- 之前 passive-vip 独有 blocklist 等逻辑已删除（正是偏离导致 blocklist.yaml 双反斜杠 bug 暴露）
+- 1f85fd9 同步 PR 修复；64f7883 macOS peercred 修复
+
+**main = active guard 版，只移植安全补丁，保留 blocklist/防循环/git push 拦截/sandbox 感知**：
+- 3f9cae8 SO_PEERCRED + daemon cap
+- ad93c21 guard 诊断改进（见下）
+- 227167e macOS peercred 修复
+
+### 顺手修复的两个 pre-existing bug（main）
+
+1. **examples/blocklist.yaml 双反斜杠**：用户管理段 6 行 pattern 写 `\\buseradd\\b`（YAML 单引号**不转义**，`\\b` 保持字面双反斜杠 → 正则匹配的是字面 `\b` 而非 word boundary → 全部失效）。正确写法是单反斜杠 `\buseradd\b`。修复：4 反斜杠字节 → 2 反斜杠字节（YAML 解析后得 `\b`）
+2. **main guard _load_blocklist key 不匹配**：代码读 `raw.get("blocklist", [])`，blocklist.yaml 顶层 key 是 `blocked_patterns` → 加载 0 条规则（只剩 fallback）。改为 `raw.get("blocked_patterns", [])`
+
+### guard 拦截机制改进（#1C + #2，main 分支）
+
+| # | 问题 | 改进 |
+|---|------|------|
+| 1C | guard 正则 `\bsudo\b` 对 heredoc/echo/python 字符串里的 sudo 字样误报（本次会话被拦 5-6 次，被迫 base64/拆字绕过——guard 逼 agent 绕过 guard） | _sudo_block_message 增强：提示"若只是写入 sudo 字样文本（heredoc/echo/python string）可能是误报，与用户确认" |
+| 2 | vip_sudo 返回干巴巴 "VIP daemon not running" | _daemon_diagnostic() 跨平台（macOS launchctl / Linux systemctl）+ socket 路径；no-cap 分支也带 diagnostic |
+
+**#1A/B（形态白名单：heredoc/echo/python 字符串形态不触发特权拦截）未做**——涉及检测精度 vs 安全权衡，讨论后再动。
+
+### macOS 部署整改（macdemac-mini，2026-08-04）
+
+**坑 1：watchdog 方案拉不起 daemon**
+- 旧方案 `/Users/mac/.hermes/scripts/hermes-vipd-watchdog.sh` 以 mac 用户跑 `mkdir /var/run/hermes-vip` + `chown _hermesvip:daemon`，chown 静默失败（只有 root 能 chown）→ daemon bind socket Permission denied → 闪退 → watchdog 无限重启
+- **修复：改用 launchd plist**（`examples/com.hermes.vipd.plist`，RunAtLoad + KeepAlive，launchd 以 root 跑 mkdir/chown）。部署：
+  ```
+  cp examples/com.hermes.vipd.plist /Library/LaunchDaemons/
+  launchctl bootstrap system /Library/LaunchDaemons/com.hermes.vipd.plist
+  ```
+  watchdog 已废弃（kill + rm lockfile/pidfile）
+
+**坑 2：trusted_user 配置位置错误**
+- Mac 旧 config.yaml 把 `trusted_user: _hermesvip` 嵌在 `daemon:` 段下，但 vipd.py 读的是**顶层** `config.get("trusted_user")` → 读不到 → fallback SUDO_USER（launchd 无 → 空）→ 只有 root(0) trusted
+- **且值错误**：SO_PEERCRED 验证的是**连接方**（Hermes 进程）UID，不是 daemon 运行用户
+- **修复：顶层 `trusted_user: mac`**（/etc/hermes-vip/config.yaml）
+
+**坑 3（关键跨平台 bug）：macOS 没有 `socket.SOL_LOCAL` 常量**
+- `_get_peer_uid()` macOS 分支 `socket.SOL_LOCAL` 直接引用 → `module 'socket' has no attribute 'SOL_LOCAL'` → AttributeError → 返回 None → **所有连接被拒**（日志：无法获取对端 UID + rejected untrusted UID: None）
+- Linux 分支 SO_PEERCRED 正常（167 全过），**macOS 分支没测过是盲区**
+- **修复（227167e main / 64f7883 passive-vip）**：
+  ```python
+  sol_local = getattr(socket, "SOL_LOCAL", 0)
+  local_peercred = getattr(socket, "LOCAL_PEERCRED", 1)
+  cred = sock.getsockopt(sol_local, local_peercred, 12)
+  _, uid, _ = struct.unpack("3i", cred)  # xucred: version+uid+gid
+  ```
+  回退分支读 8 字节取 cr_uid（第二个 int），不是 4 字节（那是 cr_version）
+- macOS 验证：mac(501) trusted、cap 签发、id -u → 0、伪造 cap 拒；167 回归 valid/forge 全过
+
+**坑 4：server 每连接只处理一个请求**
+- `_handle_request_client` finally close → 一个连接一个请求
+- 测试脚本必须用两个连接（stamp_init 一个、sudoexec 一个），复用连接会 BrokenPipe
+- 真实 guard 流程本来就是两连接（register 拿 cap → 关 → vip_sudo 再连），不是 bug
+
+### 验证脚本位置（共享卷，用户可复用）
+
+`~/hermes-workspace/apps/hermes-vip/pr-update-63066/`
+- verify_mac_valid.py（stamp_init → cap → HMAC → id -u）
+- verify_mac_forge.py（伪造 cap 应被拒）
+- post_comment.py / post_comment2.py（GitHub API 发评论，从 Keychain 取 token）
+- CHANGES.md（PR 修复说明）
+
+### 待办
+
+- [ ] dev repo main/passive-vip push（gitee + github，HTTPS+Keychain）
+- [ ] passive-vip macOS 修复（64f7883）同步到 PR head（contrib/privilege-harness/daemon/socket_server.py）
+- [ ] #1A/B 形态白名单讨论
+- [ ] Mac 生产环境：新 guard 生效需重启 Hermes Desktop；/etc/hermes-vip/config.yaml 顶层 trusted_user: mac 已配
+- [ ] 167 /tmp 测试脚本已清理

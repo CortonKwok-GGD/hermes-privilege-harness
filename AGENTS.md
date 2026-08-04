@@ -88,6 +88,10 @@ vip_sudo:
 2. **config has 2 dev copies** — `hermes-plugin/config.yaml` is the canonical source; runtime version at `~/.hermes/plugins/hermes-vip/config.yaml` may diverge (provenance xattr prevents automated sync)
 3. **macOS provenance xattr** — blocks writes to `~/.hermes/plugins/` even as root; use host terminal to edit
 5. **macos.py `apply_mount_acls()`** — dead code; ACL blocked by com.apple.provenance on macOS 26+
+6. **daemon startup on macOS = launchd plist, NOT watchdog** — `examples/com.hermes.vipd.plist` (RunAtLoad+KeepAlive, root runs mkdir/chown). The old `hermes-vipd-watchdog.sh` ran as the logged-in user, chown failed silently, daemon crashed on socket bind (2026-08-04)
+7. **`trusted_user` must be TOP-LEVEL in /etc/hermes-vip/config.yaml** — vipd.py reads `config.get("trusted_user")`, NOT `daemon.trusted_user`. Value = the connecting Hermes user (e.g. mac/501), NOT the daemon's run user (_hermesvip). Missing -> only root(0) trusted (2026-08-04)
+8. **macOS peercred: no `socket.SOL_LOCAL` constant** — `_get_peer_uid()` must use `getattr(socket, "SOL_LOCAL", 0)` / `getattr(socket, "LOCAL_PEERCRED", 1)`; direct reference raises AttributeError -> returns None -> rejects ALL connections (2026-08-04, fixed main 227167e / passive-vip 64f7883)
+9. **one request per connection** — `_handle_request_client` closes after one request; tests must use two connections (stamp_init then sudo_execute), reuse -> BrokenPipe
 
 ## Two Branches
 
