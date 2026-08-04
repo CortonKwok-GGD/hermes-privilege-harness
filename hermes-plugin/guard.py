@@ -96,6 +96,49 @@ _cap_registered: bool = False
 _stamps: dict[str, tuple[str, float]] = {}
 
 
+
+
+# Data-container false-positive guard
+_ESCAPE_RE = re.compile(
+    r"\||&&|;|\$\s*\(|`|>\(|\bexec\b|\beval\b|\bxargs\b",
+    re.IGNORECASE,
+)
+
+
+def _is_inert_heredoc(command: str) -> bool:
+    # True if command is exactly: cat/tee > file << DELIM ... DELIM
+    lines = command.splitlines()
+    if not lines:
+        return False
+    first = lines[0].strip()
+    m = re.match(r"^(?:cat|tee)\s*(?:>\s*)?\s+\S+\s+<<\s*['\"]?(\w+)['\"]?$", first)
+    if not m:
+        return False
+    delim = m.group(1)
+    body = [ln for ln in lines[1:] if ln.strip()]
+    if not body:
+        return False
+    if body[-1].strip() != delim:
+        return False
+    for ln in lines[1:-1]:
+        if _ESCAPE_RE.search(ln):
+            return False
+    return True
+
+
+def _is_inert_echo(command: str) -> bool:
+    # True if command is exactly: echo 'single-quoted text' (no escape)
+    m = re.match(r"^echo\s+'([^']*)'\s*$", command.strip(), re.DOTALL)
+    if not m:
+        return False
+    return not _ESCAPE_RE.search(command)
+
+
+def _is_inert_data_write(command: str) -> bool:
+    # True only when command is a provably inert data write
+    if _ESCAPE_RE.search(command.splitlines()[0] if command else ""):
+        return False
+    return _is_inert_heredoc(command) or _is_inert_echo(command)
 def _register_stamp_cap():
     """Ask the daemon to issue a capability. Called once at plugin init.
 
@@ -273,7 +316,7 @@ def check(tool_name: str, args: dict, **kw) -> dict | None:
     # ── 出路 1: 子进程 → bwrap 包装，透明放行 ──
     if tool_name == "terminal":
         cmd = args.get("command", "")
-        if _has_privilege_escalation(cmd):
+        if _has_privilege_escalation(cmd) and not _is_inert_data_write(cmd):
             if vs_on:
                 return {"action": "block", "message": _sudo_block_message()}
             return None  # system sudo
