@@ -92,6 +92,7 @@ vip_sudo:
 7. **`trusted_user` must be TOP-LEVEL in /etc/hermes-vip/config.yaml** — vipd.py reads `config.get("trusted_user")`, NOT `daemon.trusted_user`. Value = the connecting Hermes user (e.g. mac/501), NOT the daemon's run user (_hermesvip). Missing -> only root(0) trusted (2026-08-04)
 8. **macOS peercred: no `socket.SOL_LOCAL` constant** — `_get_peer_uid()` must use `getattr(socket, "SOL_LOCAL", 0)` / `getattr(socket, "LOCAL_PEERCRED", 1)`; direct reference raises AttributeError -> returns None -> rejects ALL connections (2026-08-04, fixed main 227167e / passive-vip 64f7883)
 9. **one request per connection** — `_handle_request_client` closes after one request; tests must use two connections (stamp_init then sudo_execute), reuse -> BrokenPipe
+10. **data-container false-positive guard (cdb35de)** — privilege patterns match keywords inside heredoc/echo *data*, not just execution. `_is_inert_data_write()` lets through ONLY inert writes (cat/tee heredoc fully closed, echo single-quoted) with NO escape (pipe, &&/||, ;, $(), backtick, exec/eval/xargs, second command). python -c never exempted; when in doubt, block. 35 test scenarios pass
 
 ## Two Branches
 

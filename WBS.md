@@ -739,7 +739,28 @@ stamp 机制是「自证」（客户端自铸 secret+nonce），approval 队列�
 | 1C | guard 正则 `\bsudo\b` 对 heredoc/echo/python 字符串里的 sudo 字样误报（本次会话被拦 5-6 次，被迫 base64/拆字绕过——guard 逼 agent 绕过 guard） | _sudo_block_message 增强：提示"若只是写入 sudo 字样文本（heredoc/echo/python string）可能是误报，与用户确认" |
 | 2 | vip_sudo 返回干巴巴 "VIP daemon not running" | _daemon_diagnostic() 跨平台（macOS launchctl / Linux systemctl）+ socket 路径；no-cap 分支也带 diagnostic |
 
-**#1A/B（形态白名单：heredoc/echo/python 字符串形态不触发特权拦截）未做**——涉及检测精度 vs 安全权衡，讨论后再动。
+**#1A/B（数据容器白名单）已实现（cdb35de，见下文"数据容器误报防护"）**——放行规则严格：只有确证为 inert 数据写入且无执行逃逸才放行，真危险一律维持拦截；python -c 永不豁免；拿不准就拦。
+
+### 数据容器误报防护（main cdb35de，2026-08-04 下午）
+
+**问题**：SUDO_PATTERNS 的 \bsudo\b 匹配命令字符串任何位置，包括 heredoc 内容、echo 文本等**数据**。误报让 agent 被迫 base64/拆字绕过（本会话 5-6 次）——guard 在训练 agent 绕过 guard。
+
+**方案**：_has_privilege_escalation 命中后，_is_inert_data_write() 二次判定。只有**确证 inert 数据写入 + 无执行逃逸**才放行：
+
+- heredoc：cat/tee > file << DELIM 完整闭合，delimiter 是最后非空行，内容无逃逸
+- echo：echo 单引号文本，无逃逸
+
+**逃逸黑名单**（任一出现 → 拦截）：管道/&&/;/\$()/反引号/>(/exec/eval/xargs/第二行命令。python -c 永不豁免。
+
+**测试（本地 + 167 双环境 35 场景全过）**：
+- 14 基础：A1-A3 heredoc/tee + B1 echo 放行；C1-F1 sudo/doas/pkexec/sudo -、管道、命令替换拦截
+- 21 攻防：x1-x14（echo|sh、heredoc|bash、tee&&bash、变量执行、bash -c、python os.system、\$(which)）全拦截；s1-s7 安全数据放行 + 保守拦截（printf/混引号/heredoc 后注释）
+
+**实现坑**：
+1. raw string 里正则 \s 必须是**单反斜杠**（字节 [92,115]），2 反斜杠是字面——多层转义（heredoc→base64→eval）最容易翻车，最终用 python 文件直接写 raw string 解决
+2. tee 语法无需 >，正则放宽 \s*(?:>\s*)?
+3. 测试桩 sandbox.in_sandbox() 必须 False（模拟 Hermes 宿主进程），True 会让 check() 提前放行
+
 
 ### macOS 部署整改（macdemac-mini，2026-08-04）
 
@@ -785,8 +806,8 @@ stamp 机制是「自证」（客户端自铸 secret+nonce），approval 队列�
 
 ### 待办
 
-- [ ] dev repo main/passive-vip push（gitee + github，HTTPS+Keychain）
-- [ ] passive-vip macOS 修复（64f7883）同步到 PR head（contrib/privilege-harness/daemon/socket_server.py）
-- [ ] #1A/B 形态白名单讨论
-- [ ] Mac 生产环境：新 guard 生效需重启 Hermes Desktop；/etc/hermes-vip/config.yaml 顶层 trusted_user: mac 已配
-- [ ] 167 /tmp 测试脚本已清理
+- [x] dev repo main/passive-vip push（gitee + github）—— main cdb35de 已推，passive-vip 64f7883 之前已推（Everything up-to-date）
+- [x] passive-vip macOS 修复同步到 PR—— PR head 现为 6c2073d07（0e7639202 + macOS SOL_LOCAL 修复），与 dev passive-vip 逐字节一致
+- [x] #1A/B 数据容器白名单（cdb35de，已实现 + 35 场景测试全过）
+- [ ] Mac 生产环境：新 guard 已复制到 ~/.hermes/plugins/hermes-vip/（md5 一致），**重启 Hermes Desktop 生效**
+- [x] 167 /tmp 测试脚本已清理
