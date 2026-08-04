@@ -43,7 +43,12 @@ for _env_path in [("VIP_REQUEST_SOCK", REQUEST_SOCK), ("VIP_BLOCKLIST_FILE", BLO
 def _sudo_block_message() -> str:
     """Return state-aware block message for terminal sudo."""
     if sandbox.vip_sudo_enabled():
-        return "Use vip_sudo for privileged commands."
+        return (
+            "Use vip_sudo for privileged commands. "
+            "If the command only *writes* sudo-looking text "
+            "(heredoc/echo/python string), it may be a false positive - "
+            "confirm with the user before running."
+        )
     if sandbox.sandbox_enabled():
         return "vip_sudo disabled in sandbox. Ask the user to run /vipsudo on in chat."
     return ""
@@ -331,11 +336,17 @@ def vip_sudo(command: str, reason: str = "") -> str:
     try:
         sock.connect(REQUEST_SOCK)
     except OSError as exc:
-        return json.dumps({"error": "VIP daemon not running", "exit_code": -1})
+        hint = _daemon_diagnostic()
+        return json.dumps({
+            "error": f"VIP daemon not running: {exc}",
+            "diagnostic": hint,
+            "exit_code": -1,
+        })
 
     if not _cap_registered or not _stamp_cap:
         return json.dumps({
             "error": "REJECTED: no stamp capability (daemon unreachable at init?)",
+            "diagnostic": _daemon_diagnostic(),
             "exit_code": -1,
         })
 
@@ -372,6 +383,30 @@ def vip_sudo(command: str, reason: str = "") -> str:
         return json.dumps({"error": f"daemon error: {exc}", "exit_code": -1})
     finally:
         sock.close()
+
+
+
+
+def _daemon_diagnostic() -> str:
+    """Best-effort daemon status hint when request.sock is unreachable.
+
+    Does NOT rely on the socket (it is down). Uses platform service
+    commands to tell the user how to start the daemon.
+    """
+    import platform
+    hints = []
+    try:
+        if platform.system() == "Darwin":
+            hints.append("check: launchctl list | grep com.hermes.vipd")
+            hints.append("start: " + S + " launchctl bootstrap system "
+                         "/Library/LaunchDaemons/com.hermes.vipd.plist")
+        else:
+            hints.append("check: systemctl status hermes-vipd")
+            hints.append("start: " + S + " systemctl start hermes-vipd")
+    except Exception:
+        pass
+    hints.append("socket: " + REQUEST_SOCK)
+    return " | ".join(hints)
 
 
 def _recv_all(sock: socket.socket, size: int) -> bytes:
