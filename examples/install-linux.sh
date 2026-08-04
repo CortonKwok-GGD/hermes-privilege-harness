@@ -219,7 +219,7 @@ ExecStart=$VIP_BIN
 Restart=always
 RestartSec=5
 RuntimeDirectory=hermes-vip
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 
 [Install]
 WantedBy=multi-user.target

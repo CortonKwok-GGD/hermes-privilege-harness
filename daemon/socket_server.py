@@ -19,6 +19,9 @@ Socket Server — Unix socket 服务
   4. 即使暴力猜 req_id，2^48 穷举不可行
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import sys
 import logging
@@ -43,11 +46,11 @@ SOCKET_DIR = "/var/run/hermes-vip/"
 
 # ── Socket 权限 ──
 # request.sock: hermes 组可读写（770）
-REQUEST_SOCK_MODE = 0o666
+REQUEST_SOCK_MODE = 0o660
 # control.sock: 任何用户可连，但 daemon 会验证对端 UID（666）
-CONTROL_SOCK_MODE = 0o666
+CONTROL_SOCK_MODE = 0o660
 # 父目录: 仅 root 可遍历（700）
-SOCKET_DIR_MODE = 0o755
+SOCKET_DIR_MODE = 0o750
 
 # ── 信任的 UID ──
 # 仅这些 UID 可通过 control.sock 提交审批
@@ -69,6 +72,7 @@ MSG_LIST_PENDING = "list_pending"
 MSG_GET_RESULT = "get_result"
 MSG_PING = "ping"
 MSG_SUDO_EXECUTE = "sudo_execute"
+MSG_STAMP_INIT = "stamp_init"
 
 # ── 结果缓存 ──
 # req_id -> execution result (last 20 results kept)
@@ -251,6 +255,9 @@ class SocketServer:
         # 线程池（非阻塞任务用，审批等待不占用线程池）
         self._pool = ThreadPoolExecutor(max_workers=10)
 
+        # daemon-issued stamp capabilities: cap_b64 -> peer_uid
+        self._capabilities: dict[str, int] = {}
+
         # 连接器注册（name → send_approval_request 回调）
         self._connectors: dict[str, Callable] = {}
 
@@ -333,7 +340,7 @@ class SocketServer:
     # ── 请求 socket 处理 ──
 
     def _serve_requests(self):
-        """请求 socket 主循环"""
+        """Request socket main loop"""
         server = self._request_server
         if not server:
             return
@@ -341,7 +348,15 @@ class SocketServer:
         while self._running:
             try:
                 client, _ = server.accept()
-                self._pool.submit(self._handle_request_client, client)
+                # SO_PEERCRED gate: only trusted UIDs may reach request.sock.
+                peer_uid = _get_peer_uid(client)
+                if peer_uid is None or peer_uid not in TRUSTED_UIDS:
+                    logger.warning("request socket rejected untrusted UID: %s",
+                                   peer_uid)
+                    client.close()
+                    continue
+                self._pool.submit(
+                    self._handle_request_client, client, peer_uid)
             except socket.timeout:
                 continue
             except OSError as exc:
@@ -349,16 +364,18 @@ class SocketServer:
                     logger.error("request socket accept error: %s", exc)
                     time.sleep(1)
 
-    def _handle_request_client(self, client: socket.socket):
-        """处理一个请求 socket 客户端（Hermes Plugin 连接）"""
+    def _handle_request_client(self, client: socket.socket, peer_uid: int):
+        """Handle one request socket client (verified peer uid)"""
         try:
             req = _recv_json(client)
             req_type = req.get("type")
 
-            if req_type == MSG_SUDO_REQUEST:
+            if req_type == MSG_STAMP_INIT:
+                self._handle_stamp_init(client, req, peer_uid)
+            elif req_type == MSG_SUDO_REQUEST:
                 self._handle_sudo_request(client, req)
             elif req_type == MSG_SUDO_EXECUTE:
-                self._handle_sudo_execute(client, req)
+                self._handle_sudo_execute(client, req, peer_uid)
             elif req_type == MSG_PING:
                 _send_json(client, {
                     "status": "ok",
@@ -368,7 +385,7 @@ class SocketServer:
             else:
                 _send_json(client, {
                     "status": "error",
-                    "error": f"未知请求类型: {req_type}",
+                    "error": f"unknown request type: {req_type}",
                 })
         except (ConnectionError, json.JSONDecodeError, ValueError) as exc:
             logger.warning("request client error: %s", exc)
@@ -377,6 +394,24 @@ class SocketServer:
                 client.close()
             except OSError:
                 pass
+
+    def _handle_stamp_init(self, client: socket.socket, req: dict,
+                           peer_uid: int):
+        """Issue a daemon-generated capability bound to this peer uid.
+
+        The client NEVER supplies the secret: the daemon mints a random
+        capability and binds it to the verified peer uid. A local process
+        cannot self-mint credentials. Re-registering replaces the previous
+        capability for the same peer uid.
+        """
+        cap = os.urandom(32)
+        cap_b64 = base64.b64encode(cap).decode()
+        for old in [k for k, v in self._capabilities.items()
+                    if v == peer_uid]:
+            del self._capabilities[old]
+        self._capabilities[cap_b64] = peer_uid
+        logger.info("stamp capability issued peer_uid=%d", peer_uid)
+        _send_json(client, {"status": "ok", "cap": cap_b64})
 
     def _handle_sudo_request(self, client: socket.socket, req: dict):
         """处理一条 sudo 请求：入队列→等待审批→执行→返回结果"""
@@ -438,11 +473,20 @@ class SocketServer:
         # 9. 缓存结果（供 /vip-approve 取回）
         _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
 
-    def _handle_sudo_execute(self, client: socket.socket, req: dict):
-        """处理直接执行请求（用户已通过原生卡片批准，跳过审批队列）"""
+    def _handle_sudo_execute(self, client: socket.socket, req: dict,
+                             peer_uid: int):
+        """Handle direct execution with daemon-issued capability + HMAC.
+
+        Verification (all three must hold):
+          1. capability exists and is bound to THIS peer uid
+          2. HMAC-SHA256(command, cap) matches the supplied stamp
+          3. connection already passed the SO_PEERCRED gate
+        """
         command = req.get("command", "")
-        reason = req.get("reason", "直接执行")
+        reason = req.get("reason", "direct execution")
         origin = req.get("origin", {})
+        stamp = req.get("stamp", "")
+        cap_b64 = req.get("cap", "")
 
         if not isinstance(origin, dict):
             origin = {"channel": "vip_sudo"}
@@ -450,12 +494,31 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "command required"})
             return
 
-        logger.info("sudo_execute command=%s reason=%s", command[:60], reason[:30])
+        if not cap_b64:
+            _send_json(client, {"status": "error", "error": "REJECTED: capability required"})
+            return
+
+        cap_owner = self._capabilities.get(cap_b64)
+        if cap_owner is None:
+            _send_json(client, {"status": "error", "error": "REJECTED: unknown capability"})
+            logger.warning("sudo_execute REJECTED: unknown cap peer=%d", peer_uid)
+            return
+        if cap_owner != peer_uid:
+            _send_json(client, {"status": "error", "error": "REJECTED: capability not bound to peer"})
+            logger.warning("sudo_execute REJECTED: cap owner %d != peer %d",
+                           cap_owner, peer_uid)
+            return
+
+        secret = base64.b64decode(cap_b64)
+        expected = hmac.new(secret, command.encode(), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(stamp, expected):
+            _send_json(client, {"status": "error", "error": "REJECTED: invalid stamp"})
+            logger.warning("sudo_execute REJECTED: stamp mismatch peer=%d", peer_uid)
+            return
+
+        logger.info("sudo_execute cmd=%s peer=%d stamp=OK", command[:60], peer_uid)
         audit.request("direct", command, origin.get("channel", "vip_sudo"))
-
-        # 直接执行，跳过审批
         exec_result = self._executor.execute(command)
-
         _send_json(client, {"status": "approved", "result": exec_result})
         logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))
 

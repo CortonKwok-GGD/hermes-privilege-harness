@@ -5,7 +5,9 @@ Single responsibility: intercept tool calls in pre_tool_call hook.
 Block messages are state-aware: they adapt to sandbox/vip_sudo config.
 """
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
@@ -84,28 +86,66 @@ def _has_privilege_escalation(command: str) -> bool:
 # ── Stamp verification ──
 
 _STAMP_TTL = 15
-_stamps: dict[str, float] = {}
+_stamp_cap: bytes = b""
+_cap_registered: bool = False
+_stamps: dict[str, tuple[str, float]] = {}
+
+
+def _register_stamp_cap():
+    """Ask the daemon to issue a capability. Called once at plugin init.
+
+    The daemon mints the random cap and binds it to our peer uid - a local
+    process cannot self-mint a credential.
+    """
+    global _cap_registered, _stamp_cap
+    if _cap_registered:
+        return
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
+    try:
+        s.connect(REQUEST_SOCK)
+        req = json.dumps({"type": "stamp_init"}).encode()
+        s.sendall(struct.pack("!I", len(req)) + req)
+        raw = _recv_all(s, 4)
+        if raw and len(raw) == 4:
+            mlen = struct.unpack("!I", raw)[0]
+            data = _recv_all(s, mlen)
+            resp = json.loads(data.decode())
+            if resp.get("status") == "ok" and resp.get("cap"):
+                _stamp_cap = base64.b64decode(resp["cap"])
+                _cap_registered = True
+                logger.info("stamp capability issued (%d bytes)",
+                            len(_stamp_cap))
+    except Exception as exc:
+        logger.warning("failed to register stamp capability: %s", exc)
+    finally:
+        s.close()
 
 
 def _stamp(command: str):
     key = hashlib.sha256(command.encode()).hexdigest()
+    digest = hmac.new(_stamp_cap, command.encode(),
+                      hashlib.sha256).hexdigest()
+    now = time.time()
     with _lock:
-        _stamps[key] = time.time()
-        now = time.time()
-        for k in list(_stamps):
-            if now - _stamps[k] > _STAMP_TTL * 2:
-                del _stamps[k]
+        _stamps[key] = (digest, now)
+        for k in [k for k, (_, ts) in _stamps.items()
+                  if now - ts > _STAMP_TTL * 2]:
+            del _stamps[k]
 
 
 def _verify(command: str) -> bool:
     key = hashlib.sha256(command.encode()).hexdigest()
     with _lock:
-        ts = _stamps.pop(key, None)
-    if ts is None:
+        entry = _stamps.pop(key, None)
+    if entry is None:
         return False
+    digest, ts = entry
     if time.time() - ts > _STAMP_TTL:
         return False
-    return True
+    expected = hmac.new(_stamp_cap, command.encode(),
+                        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, expected)
 
 
 # ── Loop detection ──
@@ -170,7 +210,7 @@ def _load_blocklist() -> list[tuple[re.Pattern, str]]:
         with open(BLOCKLIST_FILE) as f:
             raw = yaml.safe_load(f) or {}
         rules = []
-        for item in raw.get("blocklist", []):
+        for item in raw.get("blocked_patterns", []):
             pattern = item.get("pattern")
             label = item.get("label", "unknown")
             if pattern:
@@ -293,11 +333,20 @@ def vip_sudo(command: str, reason: str = "") -> str:
     except OSError as exc:
         return json.dumps({"error": "VIP daemon not running", "exit_code": -1})
 
+    if not _cap_registered or not _stamp_cap:
+        return json.dumps({
+            "error": "REJECTED: no stamp capability (daemon unreachable at init?)",
+            "exit_code": -1,
+        })
+
     req = {
         "type": "sudo_execute",
         "command": command,
         "reason": reason or "privilege request",
         "origin": {"channel": "vip_sudo", "timestamp": time.time()},
+        "cap": base64.b64encode(_stamp_cap).decode(),
+        "stamp": hmac.new(_stamp_cap, command.encode(),
+                          hashlib.sha256).hexdigest(),
     }
     payload = json.dumps(req).encode()
     try:
@@ -323,3 +372,16 @@ def vip_sudo(command: str, reason: str = "") -> str:
         return json.dumps({"error": f"daemon error: {exc}", "exit_code": -1})
     finally:
         sock.close()
+
+
+def _recv_all(sock: socket.socket, size: int) -> bytes:
+    if size <= 0:
+        return b""
+    chunks, remaining = [], size
+    while remaining > 0:
+        c = sock.recv(remaining)
+        if not c:
+            break
+        chunks.append(c)
+        remaining -= len(c)
+    return b"".join(chunks)

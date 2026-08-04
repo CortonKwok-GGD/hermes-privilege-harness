@@ -102,6 +102,7 @@ def _register_market_intel(ctx):
 def register(ctx):
     _inject_git_push_pattern()
     _patch_approval_display()
+    guard._register_stamp_cap()
 
     # ── pre_tool_call hook ──
     ctx.register_hook("pre_tool_call", _hook)
