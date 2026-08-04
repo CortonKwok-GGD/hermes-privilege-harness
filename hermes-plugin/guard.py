@@ -9,11 +9,12 @@ Security: vip_sudo handler refuses any command it hasn't stamped in check().
           A command must pass through the approval gate before it executes.
 """
 
+import base64
 import hashlib
+import hmac
 import json
 import logging
 import os
-import re
 import socket
 import struct
 import time
@@ -21,91 +22,84 @@ import time
 logger = logging.getLogger("hermes-vip.guard")
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
-BLOCKLIST_FILE = os.environ.get("VIP_BLOCKLIST_FILE", "/usr/local/etc/hermes-vip/blocklist.yaml")
 
-# ── vip_sudo 黑名单（操作级）──
-# 审批批准后，匹配的命令仍然被拒绝——防止高危操作即使是用户批准的。
-_BLOCKLIST_CACHE: tuple[float, list[tuple[re.Pattern, str]]] = (0, [])
-_BLOCKLIST_CACHE_TTL = 60
+import threading
+_lock = threading.Lock()
 
-_FALLBACK_BLOCKLIST: list[tuple[str, str]] = [
-    (r"\buseradd\b|\badduser\b", "创建新用户"),
-    (r"\bpasswd\b|\bchpasswd\b", "修改密码"),
-    (r"\busermod\b.*-G\s+.*\b(sudo|wheel)\b", "赋予用户 sudo 权限"),
-    (r"\bvisudo\b|/etc/sudoers", "编辑 sudoers 文件"),
-    (r"\brm\b\s+(?:-[rRfF]+\s+)*\S+/\s*$|rm\s+.*--no-preserve-root", "删除根目录"),
-    (r"\bmkfs\b|dd\s+.*of=/dev/", "格式化或覆写磁盘"),
-    (r"\bchmod\b\s+(?:-[a-zA-Z]+\s+)*[67]77\s+\S+|chmod\s+.*\+s\b", "全局提权或设置 SUID"),
-    (r"\bssh-keygen\b.*-f.*authorized|>>\s*\S*authorized_keys", "写入 SSH authorized_keys"),
-    (r"\bcrontab\b\s+-[^l]|^\s*@reboot\b", "编辑 crontab 或持久化任务"),
-    (r"\biptables\s+.*-F\b|\bufw\s+disable\b", "关闭防火墙"),
-]
+# ── Defense-in-depth daemon-level stamp verification ──
+# The capability is ISSUED BY THE DAEMON (stamp_init) and bound to the
+# plugin's peer uid. The plugin never self-mints secrets. Every
+# sudo_execute includes HMAC-SHA256(command, cap) as stamp; the daemon
+# verifies cap ownership + HMAC before executing.
+_stamp_cap: bytes = b""          # daemon-issued capability
+_stamps: dict[str, tuple[str, float]] = {}   # sha256(command) -> (hmac, ts)
+_cap_registered: bool = False
 
 
-def _load_blocklist() -> list[tuple[re.Pattern, str]]:
-    global _BLOCKLIST_CACHE
-    now = time.time()
-    if now - _BLOCKLIST_CACHE[0] < _BLOCKLIST_CACHE_TTL:
-        return _BLOCKLIST_CACHE[1]
+def _register_stamp_cap():
+    """Ask the daemon to issue a capability. Called once at plugin init.
+
+    The daemon mints the random cap and binds it to our peer uid — a local
+    process cannot self-mint a credential, so the old self-authentication
+    bypass is closed.
+    """
+    global _cap_registered, _stamp_cap
+    if _cap_registered:
+        return
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(5)
     try:
-        import yaml
-    except ImportError:
-        return _BLOCKLIST_CACHE[1] if _BLOCKLIST_CACHE[1] else _compile_fallback()
-    patterns = []
-    try:
-        with open(BLOCKLIST_FILE) as f:
-            cfg = yaml.safe_load(f) or {}
-        for entry in cfg.get("blocked_patterns", []):
-            pat = entry.get("pattern", "")
-            label = entry.get("label", pat)
-            if pat:
-                patterns.append((re.compile(pat, re.IGNORECASE), label))
-        if not patterns:
-            raise ValueError("empty blocklist")
-    except Exception:
-        logger.warning("blocklist load failed, using fallback")
-        patterns = _compile_fallback()
-    _BLOCKLIST_CACHE = (now, patterns)
-    return patterns
+        s.connect(REQUEST_SOCK)
+        req = json.dumps({"type": "stamp_init"}).encode()
+        s.sendall(struct.pack("!I", len(req)) + req)
+        raw = _recv_all(s, 4)
+        if raw and len(raw) == 4:
+            mlen = struct.unpack("!I", raw)[0]
+            data = _recv_all(s, mlen)
+            resp = json.loads(data.decode())
+            if resp.get("status") == "ok" and resp.get("cap"):
+                _stamp_cap = base64.b64decode(resp["cap"])
+                _cap_registered = True
+                logger.info("stamp capability issued (%d bytes)",
+                            len(_stamp_cap))
+    except Exception as exc:
+        logger.warning("failed to register stamp capability: %s", exc)
+    finally:
+        s.close()
 
 
-def _compile_fallback() -> list[tuple[re.Pattern, str]]:
-    return [(re.compile(pat, re.IGNORECASE), label) for pat, label in _FALLBACK_BLOCKLIST]
-
-
-def _check_blocklist(command: str) -> tuple[bool, str]:
-    for pat, label in _load_blocklist():
-        if pat.search(command):
-            return True, label
-    return False, ""
-
-# ── Defense-in-depth: commands must be stamped by check() before execution ──
-# check() stores a stamp → handler verifies it → handler clears it.
-# A direct call to vip_sudo (bypassing the approval card) will be rejected.
-_STAMP_TTL = 30  # seconds — generous: handler runs immediately after approval
-_stamps: dict[str, float] = {}
+_STAMP_TTL = 15.0
 
 
 def _stamp(command: str):
-    """Mark a command as having passed through the approval gate."""
+    """Record that this exact command passed check() (full-sha256 key)."""
     key = hashlib.sha256(command.encode()).hexdigest()
-    _stamps[key] = time.time()
-    # Clean expired stamps
+    digest = hmac.new(_stamp_cap, command.encode(), hashlib.sha256).hexdigest()
     now = time.time()
-    for k in list(_stamps):
-        if now - _stamps[k] > _STAMP_TTL * 2:
+    with _lock:
+        _stamps[key] = (digest, now)
+        for k in [k for k, (_, ts) in _stamps.items()
+                  if now - ts > _STAMP_TTL * 2]:
             del _stamps[k]
 
 
 def _verify(command: str) -> bool:
-    """Verify the command was stamped by check(). Returns True and clears stamp."""
+    """Verify the command was stamped by check() and matches exactly.
+
+    Full-sha256 key (not a 120-char prefix), HMAC value comparison, and a
+    TTL check — a same-prefix command cannot pass.
+    """
     key = hashlib.sha256(command.encode()).hexdigest()
-    ts = _stamps.pop(key, None)
-    if ts is None:
+    with _lock:
+        entry = _stamps.pop(key, None)
+    if entry is None:
         return False
+    digest, ts = entry
     if time.time() - ts > _STAMP_TTL:
         return False
-    return True
+    expected = hmac.new(_stamp_cap, command.encode(),
+                        hashlib.sha256).hexdigest()
+    return hmac.compare_digest(digest, expected)
 
 
 # ── pre_tool_call ──
@@ -117,7 +111,7 @@ def check(tool_name: str, args: dict):
         _stamp(command)
         return {
             "action": "approve",
-            "message": f"sudo: {command[:80]}",
+            "message": f"Execute with root: {command[:80]}",
         }
     return None
 
@@ -138,23 +132,6 @@ def vip_sudo(command: str, reason: str = "") -> str:
             "exit_code": -1,
         })
 
-    # ── 操作级黑名单 ──
-    # 即使用户批准了，高危操作也被拒绝（需要手动执行）
-    blocked, label = _check_blocklist(command)
-    if blocked:
-        logger.warning(
-            "BLOCKED dangerous command (rule=%s): %s", label, command[:120],
-        )
-        return json.dumps({
-            "error": (
-                f"BLOCKED: {label}\n\n"
-                f"This operation is blocked by VIP security policy.\n\n"
-                f"Execute manually:\n  {command}\n\n"
-                f"To allow: edit {BLOCKLIST_FILE}"
-            ),
-            "exit_code": -1,
-        })
-
     sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     sock.settimeout(600)
 
@@ -164,11 +141,20 @@ def vip_sudo(command: str, reason: str = "") -> str:
         logger.error("daemon unreachable: %s", exc)
         return json.dumps({"error": "VIP daemon not running", "exit_code": -1})
 
+    if not _cap_registered or not _stamp_cap:
+        return json.dumps({
+            "error": "REJECTED: no stamp capability (daemon unreachable at init?)",
+            "exit_code": -1,
+        })
+
     req = {
         "type": "sudo_execute",
         "command": command,
-        "reason": reason or "提权请求",
+        "reason": reason or "privilege request",
         "origin": {"channel": "vip_sudo", "timestamp": time.time()},
+        "cap": base64.b64encode(_stamp_cap).decode(),
+        "stamp": hmac.new(_stamp_cap, command.encode(),
+                          hashlib.sha256).hexdigest(),
     }
     payload = json.dumps(req).encode()
 

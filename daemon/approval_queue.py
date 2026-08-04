@@ -1,11 +1,11 @@
 """
-Approval Queue — 审批队列管理
+Approval Queue — Approval queue
 =============================
 
 核心职责：
-1. 接收 sudo 请求，生成 req_id，入队列
+1. Accept sudo requests, generate req_id, enqueue
 2. 管理 TTL 超时（默认 5 分钟）
-3. 接收审批响应，匹配 req_id，返回结果
+3. Accept approval responses, match req_id, return result
 4. 线程安全（requests 可能并发提交）
 """
 
@@ -21,7 +21,7 @@ logger = logging.getLogger("vipd.approval_queue")
 
 
 class ApprovalEntry:
-    """一条待审批的提权请求"""
+    """A pending privilege request"""
 
     __slots__ = (
         "req_id", "command", "reason", "origin",
@@ -65,7 +65,7 @@ class ApprovalEntry:
 
 
 class ApprovalQueue:
-    """线程安全的审批队列"""
+    """Thread-safe approval queue"""
 
     def __init__(self, ttl: int = 300):
         self._ttl = ttl
@@ -79,7 +79,7 @@ class ApprovalQueue:
 
     def submit(self, command: str, reason: str, origin: dict) -> ApprovalEntry:
         """
-        提交一条提权请求。
+        Submit a privilege request。
 
         生成唯一的 req_id，创建 ApprovalEntry，入队列。
         返回 entry，调用者通过 entry.event.wait() 阻塞等待结果。

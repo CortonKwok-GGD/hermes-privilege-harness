@@ -101,11 +101,21 @@ if [ -f /etc/hermes-vip/config.yaml ]; then
   echo "  ✅ 旧配置已备份到 config.yaml.bak.$(date +%Y%m%d)"
 fi
 
-# ── 5. 创建提权用户
+# ── 5. 创建提权用户 + 组 ──
+if ! getent group hermes-vip >/dev/null 2>&1; then
+  echo "  📋 创建 hermes-vip 组..."
+  sudo groupadd -r hermes-vip
+fi
 if ! id hermes-vip >/dev/null 2>&1; then
   echo "  📋 创建提权用户 hermes-vip..."
-  sudo useradd -r -s /sbin/nologin hermes-vip
+  sudo useradd -r -s /sbin/nologin -g hermes-vip hermes-vip
   echo "    ✅ hermes-vip 已创建（不可登录、不可 SSH）"
+fi
+# socket 0660 需要 Hermes 用户加入 hermes-vip 组才能连 request.sock
+if ! groups "$REAL_USER" 2>/dev/null | grep -q hermes-vip; then
+  echo "  📋 将 $REAL_USER 加入 hermes-vip 组（socket 0660 需要）..."
+  sudo usermod -a -G hermes-vip "$REAL_USER"
+  echo "    ✅ 已加入（新登录生效）"
 fi
 
 # ── 6. sudoers
@@ -181,7 +191,7 @@ User=hermes-vip
 ExecStart=/usr/local/bin/hermes-vipd
 Restart=always
 RuntimeDirectory=hermes-vip
-RuntimeDirectoryMode=0755
+RuntimeDirectoryMode=0750
 [Install]
 WantedBy=multi-user.target
 SERVICE

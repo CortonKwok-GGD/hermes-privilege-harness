@@ -1,12 +1,12 @@
 """
-Executor — 命令执行器
+Executor — Command executor
 =====================
 
-以 root 身份执行已批准的提权命令。
+Execute approved privileged commands as root。
 
-安全措施：
-- 超时自动 kill
-- stdout/stderr 大小限制
+Security：
+- Auto-kill on timeout
+- stdout/stderr size limits
 """
 
 import logging
@@ -21,7 +21,7 @@ logger = logging.getLogger("vipd.executor")
 
 
 class Executor:
-    """命令执行器"""
+    """Command executor"""
 
     def __init__(self, timeout: int = 300, max_stdout: int = 50000):
         self._timeout = timeout
@@ -30,7 +30,7 @@ class Executor:
     def execute(self, command: str, timeout: Optional[int] = None,
                 env: Optional[dict] = None) -> dict:
         """
-        执行命令。
+        Execute command。
 
         Args:
             command: shell 命令字符串
@@ -79,13 +79,13 @@ class Executor:
                         proc.wait(timeout=2)
                     except (ProcessLookupError, subprocess.TimeoutExpired):
                         pass
-                result["stderr"] = f"命令执行超时（{actual_timeout}s）"
+                result["stderr"] = f"command timed out（{actual_timeout}s）"
                 result["exit_code"] = -1
                 end = time.time()
                 result["duration_ms"] = int((end - start) * 1000)
                 return result
 
-            # 截断输出
+            # Truncate output
             stdout_str = stdout_bytes.decode("utf-8", errors="replace")
             stderr_str = stderr_bytes.decode("utf-8", errors="replace")
 
@@ -99,13 +99,13 @@ class Executor:
             result["exit_code"] = proc.returncode
 
         except FileNotFoundError:
-            result["stderr"] = f"命令不存在：{command}"
+            result["stderr"] = f"command not found：{command}"
             result["exit_code"] = 127
         except PermissionError:
-            result["stderr"] = f"权限不足：{command}"
+            result["stderr"] = f"permission denied：{command}"
             result["exit_code"] = 126
         except Exception as exc:
-            result["stderr"] = f"执行异常：{exc}"
+            result["stderr"] = f"execution error：{exc}"
             result["exit_code"] = -1
 
         end = time.time()

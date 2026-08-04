@@ -1,5 +1,5 @@
 """
-Audit — 不可变审计日志
+Audit — 不可变Audit log
 =====================
 
 append-only 日志，记录 VIP daemon 每个操作。
@@ -19,21 +19,21 @@ AUDIT_LOG = "/var/log/hermes-vip/audit.log"
 
 
 class AuditLogger:
-    """审计日志写入器"""
+    """Audit log写入器"""
 
     def __init__(self, path: str = AUDIT_LOG):
         self._path = path
         self._fd = None
 
     def open(self):
-        """打开审计日志文件（append mode）"""
+        """打开Audit log文件（append mode）"""
         try:
             os.makedirs(os.path.dirname(self._path), exist_ok=True)
             # a+b: append-only, 二进制模式避免编码问题
             self._fd = open(self._path, "a+b")
             logger.info("audit log: %s", self._path)
         except PermissionError:
-            logger.warning("无法写入审计日志 %s（权限不足）", self._path)
+            logger.warning("无法写入Audit log %s（permission denied）", self._path)
             self._fd = None
 
     def close(self):
@@ -60,7 +60,7 @@ class AuditLogger:
             self._fd.write(line.encode("utf-8"))
             self._fd.flush()
         except OSError as exc:
-            logger.error("审计日志写入失败: %s", exc)
+            logger.error("Audit log写入失败: %s", exc)
 
     # ── 常用事件快捷方法 ──
 
