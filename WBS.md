@@ -1,5 +1,50 @@
 # Hermes Privilege Harness — WBS
 
+## 2026-08-05: v9.1 统一 ctl — docker 两端一致 + Colima 方向
+
+### 决策
+- **统一容器控制层**: container/ctl.sh（DRIVER 差异表 docker|apple 是唯一分叉点），
+  hermes-run 薄封装。删 sandbox/linux.py、macos.py。
+- **guard 提权检测收紧**（#2）: 高置信=行首提权词（_HIGH_CONF_PRIVILEGE_RE），
+  低置信（echo 数据/mid-line/subshell）放行容器（容器内 uid 1001 无提权效果）。
+- **transform 标注**（#1）: transform_terminal_output 给 terminal 结果加
+  `[hermes-run container sandbox] net=on/off` 前缀。
+- **挂载统一**: config 一份两端通用（workspace 独立挂载 rw + config/profiles ro + hermes-vm-root）。
+- **根持久化**: docker 无法挂 /（OCI 硬限制, podman/runc 同样）→ ctl.sh 展开为
+  root_persist_dirs 系统目录挂载 + 首次初始化（cp -a + chown 宿主 UID）。
+  容器内装包被禁（uid 1001 无 apk 权限）→ 装包走镜像层。
+- **multipass 否决**: 167 无 KVM + snapcraft/PPA 渠道全断 + alpine 无 cloud-init（multipass 自定义镜像硬要求）。
+- **Mac 端 Colima 方向**: brew install colima docker → VM 内 dockerd + 标准 docker CLI，
+  ctl.sh driver=docker 两端一致。Apple container 对比: 每容器一 VM (2×2G 配额) vs Colima 单 VM 2G。
+- **167 = VIP Linux 验证机**: Ubuntu 24.04, docker 29.1.3 + hermes-vm/hermes-vm-no-net 双容器,
+  registry mirror docker.1panel.live。模型指向 Mac rapid-mlx (192.168.1.166:8080 Qwen3.5-4B)。
+
+### 已验证（167 实测）
+- ctl exec / build(-t) / create / rebuild / 双容器 / --network none 隔离
+- workspace 双向同步（容器↔宿主）、config ro、profiles ro
+- 系统层持久化: 容器内写 /etc /root → rebuild → 文件保留
+- 重试语义: 容器内命令 rc≠0 直接透传（旧版卡 11 分钟 bug 修复）
+- guard 高置信 block → 引导 vip_sudo；低置信数据写入放行容器；daemon 链路 stamp_init+sudo_execute
+- transform 标注出现在 tool result
+- 单测: guard 提权检测 10/10
+
+### 待验证（Mac 部署，Colima）
+- [ ] brew install colima docker && colima start（用户执行）
+- [ ] driver 配置: config.yaml 显式 sandbox.container.driver: docker（或环境变量）
+- [ ] hermes-vm-root 复用（Mac 现有根快照）→ ctl rebuild → 容器验证
+- [ ] ctl exec / workspace 双向同步（virtiofs 挂载性能实测）
+- [ ] 系统层持久化（写 /etc → rebuild → 保留）
+- [ ] --network none 隔离（Colima）
+- [ ] Colima VM 实际 RSS（Activity Monitor 对比配额）
+- [ ] vip_sudo 完整链路（Desktop 审批卡 — CLI 非交互会崩 interrupt_queue）
+- [ ] guard / transform 在 Mac Hermes Desktop 集成
+- [ ] Apple container 退役清理（container rm hermes-vm hermes-vm-no-net）
+
+### 167 遗留
+- [ ] 模型恢复后补一次全链路回归（Rapid-MLX streaming 故障时 e2e 未跑完）
+- [ ] 镜像 Dockerfile 按需加包（pyyaml 等，装包走镜像层）
+
+
 > 项目工作分解 + 踩坑记录。完成任务后更新状态，不清除历史。
 
 ---
