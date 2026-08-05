@@ -45,6 +45,11 @@ rsync -a --delete \
     --exclude='__pycache__' \
     --exclude='*.pyc' \
     "$SRC/plugins/" "$DST/plugins/"
+echo "→ 同步 tools/ 到 runtime..."
+rsync -a --delete \
+    --exclude='__pycache__' \
+    --exclude='*.pyc' \
+    "$SRC/tools/" "$DST/tools/"
 
 # 4. 清 .pyc
 find "$DST" -name '__pycache__' -type d -exec rm -rf {} + 2>/dev/null || true
