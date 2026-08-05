@@ -139,6 +139,19 @@ cp "$PROJECT_DIR/hermes-plugin/"*.py "$PROJECT_DIR/hermes-plugin/plugin.yaml" "$
 cp "$PROJECT_DIR/hermes-plugin/sandbox/"*.py "$PLUGIN_DIR/sandbox/" 2>/dev/null || true
 find "$PLUGIN_DIR" -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 chown -R "$REAL_USER" "$PLUGIN_DIR" 2>/dev/null || true
+# 安装期间临时禁用沙箱（容器未建好时避免 Hermes terminal 全锁）；容器建好后再启用
+sudo -u "$REAL_USER" python3 - "$PLUGIN_DIR/config.yaml" <<'PYEOF'
+import sys, yaml
+p = sys.argv[1]
+c = {}
+try:
+    c = yaml.safe_load(open(p)) or {}
+except Exception:
+    pass
+c.setdefault('sandbox', {})['enabled'] = False
+yaml.safe_dump(c, open(p, 'w'), allow_unicode=True, sort_keys=False)
+print('sandbox temporarily disabled during install')
+PYEOF
 
 echo "📦 部署容器控制层..."
 deploy_bin "$PROJECT_DIR/container/ctl.sh" "$CTL_BIN"
@@ -176,6 +189,26 @@ else
         sudo -u "$REAL_USER" colima start --memory 2
     fi
     sudo -u "$REAL_USER" docker context use colima || true
+    # registry mirror（中国网络直连 docker.io 超时，同 167 方案）
+    COLIMA_CFG="$REAL_HOME/.colima/default/colima.yaml"
+    if [ -f "$COLIMA_CFG" ] && ! grep -q registry-mirrors "$COLIMA_CFG"; then
+        echo "  🔧 配置 Colima registry mirror..."
+        sudo -u "$REAL_USER" python3 - "$COLIMA_CFG" <<'PYEOF'
+import sys, yaml
+p = sys.argv[1]
+c = {}
+try:
+    c = yaml.safe_load(open(p)) or {}
+except Exception:
+    pass
+c.setdefault('docker', {})['daemon'] = {
+    'registry-mirrors': ['https://docker.1panel.live', 'https://docker.m.daocloud.io']
+}
+yaml.safe_dump(c, open(p, 'w'), allow_unicode=True, sort_keys=False)
+print('mirrors configured')
+PYEOF
+        sudo -u "$REAL_USER" colima restart
+    fi
     echo "  ✅ docker (Colima)"
 fi
 
@@ -211,6 +244,19 @@ fi
 echo "🧪 验证..."
 docker version --format 'server {{.Server.Version}}' 2>/dev/null | sed 's/^/  /' || true
 sleep 2
+# 容器已就绪，启用沙箱
+sudo -u "$REAL_USER" python3 - "$PLUGIN_DIR/config.yaml" <<'PYEOF'
+import sys, yaml
+p = sys.argv[1]
+c = {}
+try:
+    c = yaml.safe_load(open(p)) or {}
+except Exception:
+    pass
+c.setdefault('sandbox', {})['enabled'] = True
+yaml.safe_dump(c, open(p, 'w'), allow_unicode=True, sort_keys=False)
+print('sandbox enabled - container ready')
+PYEOF
 sudo -u "$REAL_USER" "$CTL_BIN" status 2>&1 | head -5
 python3 - "$VIP_RUN/request.sock" <<'PYEOF'
 import json, struct, socket, sys
