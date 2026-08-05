@@ -32,7 +32,7 @@ logger = logging.getLogger("hermes-vip.guard")
 _lock = threading.Lock()
 
 REQUEST_SOCK = os.environ.get("VIP_REQUEST_SOCK", "/var/run/hermes-vip/request.sock")
-BLOCKLIST_FILE = os.environ.get("VIP_BLOCKLIST_FILE", "/usr/local/etc/hermes-vip/blocklist.yaml")
+BLOCKLIST_FILE = os.environ.get("VIP_BLOCKLIST_FILE", "/etc/hermes-vip/blocklist.yaml")
 
 for _env_path in [("VIP_REQUEST_SOCK", REQUEST_SOCK), ("VIP_BLOCKLIST_FILE", BLOCKLIST_FILE)]:
     _name, _val = _env_path

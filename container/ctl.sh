@@ -260,7 +260,7 @@ cmd_rebuild() {
 
 cmd_build() {
     local dockerfile="${CTL_DIR}/Dockerfile.hermes-vm"
-    [ -f "$dockerfile" ] || dockerfile="${CTL_DIR}/macos/Dockerfile.hermes-vm"
+    [ -f "$dockerfile" ] || dockerfile="/usr/local/lib/hermes-vip/Dockerfile.hermes-vm"
     read_config_vals
     echo "Building image $IMG from $dockerfile (driver=$DRIVER)"
     $SUDO_PREFIX $CLI build $BUILD_ARCH_FLAG -t "$IMG" -f "$dockerfile" "$(dirname "$dockerfile")"

@@ -55,7 +55,7 @@ VIP_LOG="/var/log/hermes-vip"
 CTL_BIN="/usr/local/bin/hermes-container-ctl"
 RUN_BIN="/usr/local/bin/hermes-run"
 VIPD_BIN="/usr/local/bin/hermes-vipd"
-BLOCKLIST_FILE="/usr/local/etc/hermes-vip/blocklist.yaml"
+BLOCKLIST_FILE="/etc/hermes-vip/blocklist.yaml"
 PLUGIN_DIR="$HERMES_HOME/plugins/hermes-vip"
 
 # ── bin 部署（平台段: Mac SIP → dd）──
@@ -93,7 +93,7 @@ sleep 1
 rm -f "$VIP_RUN/request.sock" "$VIP_RUN/control.sock" 2>/dev/null || true
 
 echo "📦 部署 daemon..."
-mkdir -p "$VIP_LIB/daemon" "$VIP_ETC" "$VIP_RUN" "$VIP_LOG" /usr/local/etc/hermes-vip
+mkdir -p "$VIP_LIB/daemon" "$VIP_ETC" "$VIP_RUN" "$VIP_LOG"
 cp "$PROJECT_DIR/daemon/"*.py "$VIP_LIB/daemon/"
 touch "$VIP_LIB/__init__.py"
 chmod -R 755 "$VIP_LIB"
@@ -125,6 +125,11 @@ print('trusted_user ->', user)
 PYEOF
 chmod 644 "$VIP_ETC/config.yaml"
 
+# blocklist: 新路径优先，旧路径(/usr/local/etc/hermes-vip)迁移
+if [ ! -f "$BLOCKLIST_FILE" ] && [ -f "/usr/local/etc/hermes-vip/blocklist.yaml" ]; then
+    mv /usr/local/etc/hermes-vip/blocklist.yaml "$BLOCKLIST_FILE"
+    rmdir /usr/local/etc/hermes-vip 2>/dev/null || true
+fi
 [ -f "$BLOCKLIST_FILE" ] || cp "$PROJECT_DIR/examples/blocklist.yaml" "$BLOCKLIST_FILE"
 chmod 640 "$BLOCKLIST_FILE" 2>/dev/null || true
 
@@ -138,7 +143,8 @@ chown -R "$REAL_USER" "$PLUGIN_DIR" 2>/dev/null || true
 echo "📦 部署容器控制层..."
 deploy_bin "$PROJECT_DIR/container/ctl.sh" "$CTL_BIN"
 deploy_bin "$PROJECT_DIR/container/hermes-run.sh" "$RUN_BIN"
-deploy_bin "$PROJECT_DIR/container/Dockerfile.hermes-vm" /usr/local/bin/Dockerfile.hermes-vm
+deploy_bin "$PROJECT_DIR/container/Dockerfile.hermes-vm" "$VIP_LIB/Dockerfile.hermes-vm"
+rm -f /usr/local/bin/Dockerfile.hermes-vm 2>/dev/null || true   # 旧布局残留清理
 
 echo "🔧 准备 docker..."
 if [ "$IS_LINUX" = "1" ]; then
