@@ -184,17 +184,25 @@ else
         echo "  📦 brew install colima docker..."
         sudo -u "$REAL_USER" brew install colima docker
     fi
-    MIRROR_FLAGS="--registry-mirror https://docker.1panel.live --registry-mirror https://docker.m.daocloud.io"
     if ! sudo -u "$REAL_USER" docker context ls 2>/dev/null | grep -q colima; then
-        echo "  🚀 colima start (with registry mirror)..."
-        sudo -u "$REAL_USER" colima start --memory 2 $MIRROR_FLAGS
-    elif ! sudo -u "$REAL_USER" docker info 2>/dev/null | grep -q docker.1panel.live; then
-        echo "  🔧 colima restart with registry mirror..."
-        sudo -u "$REAL_USER" colima stop
-        sudo -u "$REAL_USER" colima start --memory 2 $MIRROR_FLAGS
+        echo "  🚀 colima start..."
+        sudo -u "$REAL_USER" colima start --memory 2
     fi
     sudo -u "$REAL_USER" docker context use colima || true
     echo "  ✅ docker (Colima)"
+fi
+
+echo "🏗️  预拉基础镜像（registry mirror 兜底）..."
+if ! sudo -u "$REAL_USER" docker image inspect alpine:3.20 >/dev/null 2>&1; then
+    for src in docker.1panel.live/library/alpine:3.20 docker.m.daocloud.io/library/alpine:3.20 alpine:3.20; do
+        if sudo -u "$REAL_USER" docker pull "$src" >/dev/null 2>&1; then
+            sudo -u "$REAL_USER" docker tag "$src" alpine:3.20 2>/dev/null || true
+            echo "  ✅ 基础镜像就绪 ($src)"
+            break
+        fi
+    done
+else
+    echo "  ⏭  基础镜像已存在"
 fi
 
 echo "🏗️  构建镜像 + 创建容器..."
