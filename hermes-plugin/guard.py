@@ -81,7 +81,11 @@ _ESCAPE_RE = re.compile(
 
 # ── Stamp verification ──
 
-_STAMP_TTL = 15
+# Stamp TTL 必须覆盖 Hermes 审批卡的等待期（approvals.gateway_timeout, 默认 300s）。
+# 之前 15s 导致: 审批卡弹出→用户稍慢批准→_verify 时 stamp 已过期→REJECTED，
+# 用户明明批准了却看到"拒绝"。stamp 是一次性的（_verify 里 pop），TTL 只做
+# 过期条目清理与时限校验，300s 内无重放风险。
+_STAMP_TTL = 300
 _stamp_cap: bytes = b""
 _cap_registered: bool = False
 _stamps: dict[str, tuple[str, float]] = {}

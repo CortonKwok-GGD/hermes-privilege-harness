@@ -459,8 +459,13 @@ class SocketServer:
             except: pass
             return
 
-        # 6. 审批结果
+        # 6. 审批结果（区分 timeout / deny：超时≠拒绝）
         decision = entry.result
+        if decision["action"] == "timeout":
+            try:
+                _send_json(client, {"status": "timeout", "req_id": entry.req_id, "error": "审批超时"})
+            except: pass
+            return
         if decision["action"] != "approve":
             try:
                 _send_json(client, {"status": "denied", "req_id": entry.req_id, "error": f"已拒绝"})

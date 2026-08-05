@@ -116,6 +116,9 @@ class ApprovalQueue:
             if entry.resolved:
                 logger.warning("resolve  req_id=%s already resolved", req_id)
                 return False
+            if entry.expired:
+                logger.warning("resolve  req_id=%s expired, ignoring late approval", req_id)
+                return False
 
             entry.connector = connector
             entry.result = {
