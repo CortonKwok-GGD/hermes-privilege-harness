@@ -20,6 +20,19 @@ CTL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 detect_driver() {
     local drv="${HERMES_CONTAINER_DRIVER:-}"
     if [ -z "$drv" ]; then
+        # config 显式配置优先（Mac+Colima → docker）
+        local cfg="${VIP_CFG:-$HOME/.hermes/plugins/hermes-vip/config.yaml}"
+        drv=$(python3 - "$cfg" <<'PYEOF' 2>/dev/null
+import os, sys, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+    print(c.get('sandbox', {}).get('container', {}).get('driver', ''))
+except Exception:
+    print('')
+PYEOF
+)
+    fi
+    if [ -z "$drv" ]; then
         case "$(uname -s)" in
             Darwin) drv="apple" ;;
             *)      drv="docker" ;;

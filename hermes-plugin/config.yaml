@@ -10,6 +10,7 @@ sandbox:
   container:
     name: hermes-vm
     image: hermes-vm:latest
+    driver: docker   # docker | apple（显式指定，覆盖 uname 检测；Mac+Colima → docker）
     memory_mb: 2048
     cpus: 4
     root_persist_dirs: [/etc, /root, /home, /usr/local, /opt, /var/lib, /var/cache, /var/log, /srv]
