@@ -99,6 +99,15 @@ mkdir -p "$VIP_LIB/daemon" "$VIP_ETC" "$VIP_RUN" "$VIP_LOG"
 cp "$PROJECT_DIR/daemon/"*.py "$VIP_LIB/daemon/"
 touch "$VIP_LIB/__init__.py"
 chmod -R 755 "$VIP_LIB"
+
+# hermes-run 执行审计: run.log 组写权限(664)。目录 775 组写以便 FIFO 滚动(mv)。
+# 组: Linux=hermes-vip(daemon 用户组), macOS=daemon(launchd 既有)。运行用户在组内即可追加。
+touch "$VIP_LOG/run.log"
+# 属组: Linux=hermes-vip(daemon 组), macOS 部署时 launchd chown _hermesvip:daemon 覆盖;
+# 组内用户(hermes-test/mac 经 hermes-vip/daemon 组)可追加 + FIFO mv。
+chown hermes-vip:hermes-vip "$VIP_LOG/run.log" 2>/dev/null || chown daemon:daemon "$VIP_LOG/run.log" 2>/dev/null || true
+chmod 664 "$VIP_LOG/run.log" 2>/dev/null || true
+chmod 775 "$VIP_LOG" 2>/dev/null || true
 cat > "$VIPD_BIN" << 'WRAP'
 #!/bin/bash
 export PYTHONPATH="/usr/local/lib/hermes-vip:$PYTHONPATH"

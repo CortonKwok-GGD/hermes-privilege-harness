@@ -8,7 +8,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>mkdir -p /var/run/hermes-vip /var/log/hermes-vip &amp;&amp; chown _hermesvip:daemon /var/run/hermes-vip /var/log/hermes-vip &amp;&amp; exec sudo -u _hermesvip /usr/local/bin/hermes-vipd</string>
+        <string>mkdir -p /var/run/hermes-vip /var/log/hermes-vip &amp;&amp; chown _hermesvip:daemon /var/run/hermes-vip /var/log/hermes-vip &amp;&amp; chmod 775 /var/log/hermes-vip &amp;&amp; exec sudo -u _hermesvip /usr/local/bin/hermes-vipd</string>
     </array>
     <key>RunAtLoad</key>
     <true/>
