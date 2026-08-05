@@ -24,7 +24,7 @@ LLM calls tool
 - apple：CLI=container（Apple Virtualization.framework），SUDO_PREFIX="sudo -u REAL_USER"，BUILD_ARCH_FLAG="--arch amd64"
 
 平台目标：**两端都用 docker**（Linux 原生 docker daemon；macOS 用 Colima 提供 VM 内 dockerd）。
-apple driver 保留为兼容/回退，计划退役。
+**已达成（2026-08-05 Mac 部署完成）**。apple driver 保留为兼容/回退（Mac 上 Apple VM hermes-vm 仍保留）。
 
 ## 挂载语义（config 一份两端通用）
 
@@ -98,7 +98,19 @@ vip_sudo:
 7. **transform hook（#1）**: transform_terminal_output 给 terminal 结果加前缀
    `[hermes-run container sandbox] net=on/off ...`，LLM 回复不复述标注，验证看 tool result
 8. **数据容器假阳性（cdb35de 遗产）**: _is_inert_data_write 只放行完全闭合 cat/tee heredoc、
-   echo 单引号；python3 heredoc 非 inert（写代码文件用 sudo 占位 + 替换，或 base64）
+   echo 单引号；python3 heredoc 非 inert（写代码文件用 @SU@ 占位 + 替换，或 base64）
+9. **Mac 部署完成（2026-08-05）**: Colima + install.sh 全流程通过。driver 从 config
+   `sandbox.container.driver: docker` 显式读（HERMES_CONTAINER_DRIVER 环境变量优先，uname 回退）。
+   Colima registry mirror 用 **build 前预拉镜像兜底**（docker pull docker.1panel.live/library/alpine:3.20
+   + tag），因为 --registry-mirror flag 是 master 未 release、colima.yaml 注入 restart 不重载。
+10. **vip_sudo cap 与 daemon 进程绑定**: daemon 重启后旧 Hermes 会话 REJECTED unknown capability →
+    重启 Hermes。terminal 沙箱不重启即生效（插件每次读 runtime config）。
+11. **install.sh 安装期间临时禁沙箱**: sandbox.enabled: false → 容器建好才置 true。
+    否则容器未就绪时 Hermes terminal 全锁（"container hermes-vm does not exist"）。
+12. **uninstall.sh**: 备份 + 交互逐类删除 + 恢复指引；用户数据（hermes-vm-root）不删只告知位置。
+13. **容器磁盘占用**: Apple container 用 `container system df`（df 是 system 子命令）。
+14. **git identity**: 容器环境全局 git config 不可靠 → 仓库级 git config user.name/email。
+15. **待办**: git push 17 个 commit；重启 Hermes 验 vip_sudo；Apple hermes-vm 回退 VM 保留待删
 
 ## Dev Rules
 

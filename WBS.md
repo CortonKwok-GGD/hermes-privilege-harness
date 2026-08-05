@@ -28,21 +28,33 @@
 - transform 标注出现在 tool result
 - 单测: guard 提权检测 10/10
 
-### 待验证（Mac 部署，Colima）
-- [ ] brew install colima docker && colima start（用户执行）
-- [ ] driver 配置: config.yaml 显式 sandbox.container.driver: docker（或环境变量）
-- [ ] hermes-vm-root 复用（Mac 现有根快照）→ ctl rebuild → 容器验证
-- [ ] ctl exec / workspace 双向同步（virtiofs 挂载性能实测）
-- [ ] 系统层持久化（写 /etc → rebuild → 保留）
-- [ ] --network none 隔离（Colima）
-- [ ] Colima VM 实际 RSS（Activity Monitor 对比配额）
-- [ ] vip_sudo 完整链路（Desktop 审批卡 — CLI 非交互会崩 interrupt_queue）
-- [ ] guard / transform 在 Mac Hermes Desktop 集成
-- [ ] Apple container 退役清理（container rm hermes-vm hermes-vm-no-net）
+### ✅ Mac 部署完成（2026-08-05 晚，用户实测）
+install.sh 全流程通过：Colima + docker driver + 双容器 + daemon active + terminal 沙箱即时生效。
+用户已删 Apple VM 的 hermes-vm-no-net + buildkit（回退安全网只剩 hermes-vm）。
 
-### 167 遗留
-- [ ] 模型恢复后补一次全链路回归（Rapid-MLX streaming 故障时 e2e 未跑完）
-- [ ] 镜像 Dockerfile 按需加包（pyyaml 等，装包走镜像层）
+### Mac 部署踩坑（已修复入 repo）
+1. **Colima --registry-mirror flag 是 master 未 release**（稳定版 unknown flag）→ install.sh 改为
+   build 前预拉基础镜像兜底（docker pull docker.1panel.live/library/alpine:3.20 + docker tag alpine:3.20）
+2. **colima.yaml docker.daemon.registry-mirrors 注入后 colima restart 不重载 daemon 配置** → 无效，弃用
+3. **driver 检测**：config `sandbox.container.driver` 显式（Mac+Colima → docker）；HERMES_CONTAINER_DRIVER
+   环境变量优先；uname 回退。ctl.sh detect_driver 三级
+4. **install.sh 安装期间临时禁沙箱**（sandbox.enabled: false）→ 容器建好才启用——
+   否则容器未就绪时 Hermes terminal 全锁（本次实际踩到：install 失败期间 agent 所有 terminal 调用报
+   "container hermes-vm does not exist"）
+5. **vip_sudo cap 与 daemon 进程绑定**：daemon 重启后旧会话 REJECTED unknown capability → 需重启 Hermes
+   （新会话重新 stamp_init）。terminal 沙箱不重启即生效（插件读 runtime config）
+6. **git identity**：容器环境全局 git config 不可靠（Author identity unknown）→ 仓库级
+   git config user.name/email 设置
+7. **Apple container 磁盘占用**：`container system df`（df 是 system 子命令，`container df` 会误调插件）
+   Images 959MB / Containers 1.44GB（3 VM）→ 用户删 2 个后 372MB
+
+### 遗留（重启对话时确认）
+- [ ] **git push 17 个 commit**（6622c68..38859a9，用户执行；github remote 是 SSH 格式，失败则 set-url https）
+- [ ] 重启 Hermes 后 vip_sudo 生效验证（whoami → root）
+- [ ] 手动清残留: /usr/local/etc/hermes-vip + ~/.hermes/scripts/hermes-vipd-watchdog.sh
+      （下次 install.sh 自动清，blocklist 会更新为模板）
+- [ ] Apple hermes-vm 回退 VM（372MB）保留，决定彻底迁移后 container rm
+- [ ] 167 已重装完整（vip-src 全量包在 ~/vip-src）；全链路回归已补（T1 标注/T2 guard 拦截/T3 容器执行）
 
 
 > 项目工作分解 + 踩坑记录。完成任务后更新状态，不清除历史。
