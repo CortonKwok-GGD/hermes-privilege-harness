@@ -248,6 +248,14 @@ else
     launchctl load /Library/LaunchDaemons/com.hermes.vipd.plist
 fi
 
+echo "📦 生成部署清单 (DEPLOYED.json)..."
+# shellcheck disable=SC1091
+source "$PROJECT_DIR/deploy/manifest.sh"
+PROJECT_DIR="$PROJECT_DIR" VIP_LIB="$VIP_LIB" VIP_ETC="$VIP_ETC" \
+    CTL_BIN="$CTL_BIN" RUN_BIN="$RUN_BIN" PLUGIN_DIR="$PLUGIN_DIR" \
+    BLOCKLIST_FILE="$BLOCKLIST_FILE" IS_MAC="$IS_MAC" IS_LINUX="$IS_LINUX" \
+    gen_deployed_json "$VIP_LIB/DEPLOYED.json"
+
 echo "🧪 验证..."
 docker version --format 'server {{.Server.Version}}' 2>/dev/null | sed 's/^/  /' || true
 sleep 2
