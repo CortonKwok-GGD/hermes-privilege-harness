@@ -221,6 +221,14 @@ PROJECT_DIR="$PROJECT_DIR" VIP_LIB="$VIP_LIB" VIP_ETC="$VIP_ETC" \
     BLOCKLIST_FILE="$BLOCKLIST_FILE" \
     gen_deployed_json "$VIP_LIB/DEPLOYED.json"
 
+echo "📦 部署更新入口 (hermes-vip-update)..."
+cat > /usr/local/bin/hermes-vip-update <<WRAP
+#!/bin/bash
+# 统一增量更新入口: auto(init→check→apply)。平台差异在 deploy/platform.sh。
+exec bash "$PROJECT_DIR/deploy/update.sh" auto --repo "$PROJECT_DIR" "\$@"
+WRAP
+chmod 755 /usr/local/bin/hermes-vip-update
+
 echo "🧪 验证..."
 docker version --format 'server {{.Server.Version}}' 2>/dev/null | sed 's/^/  /' || true
 sleep 2

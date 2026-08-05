@@ -7,12 +7,14 @@
 #       精确同步差异。每个用户/每台机器的清单不同(路径由安装时实际变量
 #       展开), 不硬编码路径。
 #
-# 用法:
-#   deploy/update.sh init [--repo PATH]   生成/重建 DEPLOYED.json (root; 旧安装升级用)
-#   deploy/update.sh check [--repo PATH]   只读比对, 普通用户可跑
-#   deploy/update.sh apply [--repo PATH]   root 同步差异, 自动重启 daemon
+# 用法 (统一入口, 安装时生成 /usr/local/bin/hermes-vip-update):
+#   hermes-vip-update            自动: init(若缺)→check→apply(有差异才apply, 需root)
+#   deploy/update.sh check       只读比对, 普通用户可跑
+#   deploy/update.sh apply       root 同步差异, 自动重启 daemon
+#   deploy/update.sh init        root 生成/重建 DEPLOYED.json (旧安装升级用)
+#   (均可加 --repo PATH 覆盖 repo 位置, 默认取脚本所在 repo)
 #
-# 退出码: 0=无差异, 1=有差异(check 时), 2=错误
+# 退出码: 0=无差异/成功, 1=有差异(check 时), 2=错误
 # ================================================================
 set -euo pipefail
 
@@ -25,16 +27,20 @@ DEPLOYED_JSON="${DEPLOYED_JSON:-$VIP_LIB/DEPLOYED.json}"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/platform.sh"
 
+# 部署清单解析用关联数组 (必须在 load_manifest 前声明)
+declare -A DEP_PATH DEP_SHA DEP_TRACK
+REPO_ROOT=""
+
 # ── 参数 ──
-ACTION="${1:-check}"
+ACTION="${1:-auto}"
 REPO="${2:-}"
-[ "$ACTION" = "init" ] || [ "$ACTION" = "check" ] || [ "$ACTION" = "apply" ] || { echo "用法: $0 {init|check|apply} [--repo PATH]"; exit 2; }
+[ "$ACTION" = "auto" ] || [ "$ACTION" = "init" ] || [ "$ACTION" = "check" ] || [ "$ACTION" = "apply" ] || { echo "用法: $0 {auto|init|check|apply} [--repo PATH]"; exit 2; }
 if [ "${REPO:-}" = "--repo" ]; then REPO="${3:-}"; fi
 [ -n "$REPO" ] || REPO="$PROJECT_DIR"
 
 # ── init: 生成/重建清单 (旧安装升级; 需要 root 写 VIP_LIB) ──
-if [ "$ACTION" = "init" ]; then
-    [ "$(id -u)" = "0" ] || { echo "❌ init 需要 root: sudo deploy/update.sh init"; exit 2; }
+do_init() {
+    [ "$(id -u)" = "0" ] || { echo "❌ init 需要 root: sudo $0 init"; exit 2; }
     # shellcheck disable=SC1091
     source "$SCRIPT_DIR/manifest.sh"
     mkdir -p "$VIP_LIB/daemon"
@@ -47,40 +53,40 @@ if [ "$ACTION" = "init" ]; then
         gen_deployed_json "$DEPLOYED_JSON"
     chown "$(platform_svc_user)" "$DEPLOYED_JSON" 2>/dev/null || true
     echo "✅ DEPLOYED.json 已生成: $DEPLOYED_JSON"
-    echo "   接下来: $0 check --repo $REPO  /  $0 apply --repo $REPO"
-    exit 0
-fi
+}
 
-# ── 加载清单 ──
-if [ ! -f "$DEPLOYED_JSON" ]; then
-    echo "❌ 找不到 $DEPLOYED_JSON"
-    echo "   请先运行: sudo $0 init --repo $REPO"
-    exit 2
-fi
-
-# ── 读清单 ──
-declare -A DEP_PATH DEP_SHA DEP_TRACK
-REPO_ROOT=""
-while IFS=$'\t' read -r rel path sha track; do
-    if [ "$rel" = "__ROOT__" ]; then REPO_ROOT="$path"; continue; fi
-    DEP_PATH["$rel"]="$path"
-    DEP_SHA["$rel"]="$sha"
-    [ "$track" = "false" ] && DEP_TRACK["$rel"]=0
-done < <(python3 - "$DEPLOYED_JSON" <<'PYEOF'
+# ── 加载清单 (check/apply 用) ──
+load_manifest() {
+    if [ ! -f "$DEPLOYED_JSON" ]; then
+        echo "❌ 找不到 $DEPLOYED_JSON"
+        echo "   请先运行: sudo $0 init --repo $REPO"
+        exit 2
+    fi
+    # shellcheck disable=SC2034
+    while IFS=$'\t' read -r rel path sha track; do
+        [ "$rel" = "__ROOT__" ] && { REPO_ROOT="$path"; continue; }
+        track="${track:-true}"
+        DEP_PATH["$rel"]="$path"
+        DEP_SHA["$rel"]="$sha"
+        [ "$track" = "false" ] && DEP_TRACK["$rel"]=0
+    done < <(python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
-print(f"__ROOT__\t{d.get('repo_root','')}\t-\t-")
+print("__ROOT__\t" + d.get("repo_root","") + "\t-\t-")
 for rel, f in d.get("files", {}).items():
-    print(f"{rel}\t{f.get('deployed_path','')}\t{f.get('deployed_sha256') or ''}\t{str(f.get('track_repo', True)).lower()}")
-PYEOF
-)
+    print(rel + "\t" + f.get("deployed_path","") + "\t" + (f.get("deployed_sha256") or "") + "\t" + str(f.get("track_repo", True)).lower())
+' "$DEPLOYED_JSON")
+}
+
+
 
 sha() { python3 -c 'import hashlib,sys;
 try: print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())
 except Exception: pass' "$1"; }
 
+do_check() {
 # ── 比对 ──
-DIFF_COUNT=0
+local DIFF_COUNT=0
 report_diff() { # rel status repo_sha dep_sha
     echo "  [${2^^}] $1"
     [ -n "${3:-}" ] && echo "      repo_sha:    ${3:-无}"
@@ -123,23 +129,25 @@ for rel in "${!DEP_PATH[@]}"; do
     compare_file "$rel"
 done
 
-if [ "$DIFF_COUNT" -eq 0 ]; then
-    echo "✅ 全部一致, 无需更新"
-    exit 0
-fi
+    if [ "$DIFF_COUNT" -eq 0 ]; then
+        echo "✅ 全部一致, 无需更新"
+        return 0
+    fi
 
-echo ""
-echo "⚠️  $DIFF_COUNT 个文件有差异"
-if [ "$ACTION" = "check" ]; then
-    echo "   执行 sudo deploy/update.sh apply 同步差异"
-    exit 1
-fi
+    echo ""
+    echo "⚠️  $DIFF_COUNT 个文件有差异"
+    if [ "$ACTION" = "check" ]; then
+        echo "   执行 sudo deploy/update.sh apply 同步差异"
+    fi
+    return 1
+}
 
 # ── apply: root 同步 ──
-[ "$(id -u)" = "0" ] || { echo "❌ apply 需要 root: sudo deploy/update.sh apply"; exit 2; }
+do_apply() {
+    [ "$(id -u)" = "0" ] || { echo "❌ apply 需要 root: sudo $0 apply"; exit 2; }
 
-echo ""
-echo "🔧 同步差异文件..."
+    echo ""
+    echo "🔧 同步差异文件..."
 APPLIED=()
 for rel in "${!DEP_PATH[@]}"; do
     # user-config / service_unit: 只记录不更新
@@ -207,9 +215,41 @@ if [ "$RESTART" = "1" ]; then
     platform_restart_vipd
 fi
 
-echo ""
-echo "✅ 更新完成"
-if [ ${#APPLIED[@]} -gt 0 ]; then
-    echo "   ⚠️  插件文件(hermes-plugin/*)变更需重启 Hermes 才生效"
-fi
+    echo ""
+    echo "✅ 更新完成"
+    if [ ${#APPLIED[@]} -gt 0 ]; then
+        echo "   ⚠️  插件文件(hermes-plugin/*)变更需重启 Hermes 才生效"
+    fi
+    return 0
+}
+
+# ══ 主流程 ══
+case "$ACTION" in
+    init)
+        do_init
+        ;;
+    check)
+        load_manifest
+        do_check
+        exit $?
+        ;;
+    apply)
+        load_manifest
+        do_check && { echo "✅ 已是最新"; exit 0; }
+        do_apply
+        ;;
+    auto)
+        # 一键: init(缺)→check→apply(有差异才 apply, 需 root)
+        if [ ! -f "$DEPLOYED_JSON" ]; then
+            echo "📋 未找到部署清单, 先 init..."
+            do_init
+        fi
+        load_manifest
+        if do_check; then
+            echo "✅ 已是最新"
+            exit 0
+        fi
+        do_apply
+        ;;
+esac
 exit 0
