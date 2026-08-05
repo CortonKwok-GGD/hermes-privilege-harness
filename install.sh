@@ -11,14 +11,9 @@ RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[1;33m'; NC='\033[0m'
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 
-# ── 平台 ──
-PLATFORM="$(uname)"
-IS_MAC=0; IS_LINUX=0
-[ "$PLATFORM" = "Darwin" ] && IS_MAC=1
-[ "$PLATFORM" = "Linux" ] && IS_LINUX=1
-if [ "$IS_MAC" = "0" ] && [ "$IS_LINUX" = "0" ]; then
-    echo "❌ Unsupported platform: $PLATFORM"; exit 1
-fi
+# ── 平台 (唯一分叉点: deploy/platform.sh) ──
+# shellcheck disable=SC1091
+source "$(cd "$(dirname "$0")" && pwd)/deploy/platform.sh"
 [ "$EUID" -eq 0 ] || { echo "❌ 需要 root: sudo bash install.sh"; exit 1; }
 
 # ── 真实用户 / Hermes home / 版本（共用）──
@@ -58,15 +53,8 @@ VIPD_BIN="/usr/local/bin/hermes-vipd"
 BLOCKLIST_FILE="/etc/hermes-vip/blocklist.yaml"
 PLUGIN_DIR="$HERMES_HOME/plugins/hermes-vip"
 
-# ── bin 部署（平台段: Mac SIP → dd）──
-deploy_bin() {
-    local src="$1" dst="$2"
-    if [ "$IS_MAC" = "1" ]; then
-        rm -f "$dst"; dd if="$src" of="$dst" 2>/dev/null; chmod 755 "$dst"
-    else
-        cp "$src" "$dst"; chmod 755 "$dst"
-    fi
-}
+# ── bin 部署 (统一走 platform.sh 翻译器) ──
+deploy_bin() { platform_bin_deploy "$1" "$2"; }
 
 echo ""
 echo "💾 备份现有部署..."
@@ -81,12 +69,7 @@ mkdir -p "$BK_DIR"
 echo "  💾 备份目录: $BK_DIR"
 
 echo "🧹 清理旧部署..."
-if [ "$IS_LINUX" = "1" ]; then
-    systemctl stop hermes-vipd 2>/dev/null || true
-    systemctl disable hermes-vipd 2>/dev/null || true
-else
-    launchctl bootout system/com.hermes.vipd 2>/dev/null || true
-fi
+platform_svc_uninstall
 pkill -f "hermes-vipd" 2>/dev/null || true
 pkill -f "daemon.vipd" 2>/dev/null || true
 sleep 1
@@ -225,35 +208,17 @@ sudo -u "$REAL_USER" "$CTL_BIN" create
 sudo -u "$REAL_USER" "$CTL_BIN" create --no-net
 
 echo "🚀 安装 daemon 服务..."
-if [ "$IS_LINUX" = "1" ]; then
-    id hermes-vip &>/dev/null || useradd -r -s /sbin/nologin hermes-vip
-    echo 'hermes-vip ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/hermes-vip
-    chmod 440 /etc/sudoers.d/hermes-vip
-    chown -R hermes-vip:hermes-vip "$VIP_LIB"
-    cp "$PROJECT_DIR/examples/hermes-vipd.service" /etc/systemd/system/
-    systemctl daemon-reload
-    systemctl enable --now hermes-vipd
-else
-    if ! id _hermesvip &>/dev/null; then
-        dscl . -create /Users/_hermesvip
-        dscl . -create /Users/_hermesvip UniqueID 450
-        dscl . -create /Users/_hermesvip PrimaryGroupID 80
-        dscl . -create /Users/_hermesvip NFSHomeDirectory /var/empty
-        dscl . -create /Users/_hermesvip UserShell /usr/bin/false
-    fi
-    echo '_hermesvip ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/hermes-vip
-    chmod 440 /etc/sudoers.d/hermes-vip
-    chown -R _hermesvip:daemon "$VIP_LIB"
-    cp "$PROJECT_DIR/examples/com.hermes.vipd.plist" /Library/LaunchDaemons/
-    launchctl load /Library/LaunchDaemons/com.hermes.vipd.plist
-fi
+platform_ensure_svc_user
+chown -R "$(platform_svc_user)" "$VIP_LIB"
+cp "$PROJECT_DIR/examples/$(basename "$(platform_svc_unit)")" "$(platform_svc_unit)"
+platform_svc_install
 
 echo "📦 生成部署清单 (DEPLOYED.json)..."
 # shellcheck disable=SC1091
 source "$PROJECT_DIR/deploy/manifest.sh"
 PROJECT_DIR="$PROJECT_DIR" VIP_LIB="$VIP_LIB" VIP_ETC="$VIP_ETC" \
     CTL_BIN="$CTL_BIN" RUN_BIN="$RUN_BIN" PLUGIN_DIR="$PLUGIN_DIR" \
-    BLOCKLIST_FILE="$BLOCKLIST_FILE" IS_MAC="$IS_MAC" IS_LINUX="$IS_LINUX" \
+    BLOCKLIST_FILE="$BLOCKLIST_FILE" \
     gen_deployed_json "$VIP_LIB/DEPLOYED.json"
 
 echo "🧪 验证..."

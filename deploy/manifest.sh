@@ -12,7 +12,8 @@ set -euo pipefail
 
 # ── 生成部署清单: 记录 repo→部署→sha256 ──
 # 输入环境变量: PROJECT_DIR VIP_LIB VIP_ETC VIP_RUN VIP_LOG CTL_BIN RUN_BIN VIPD_BIN
-#               PLUGIN_DIR BLOCKLIST_FILE REAL_USER IS_MAC IS_LINUX
+#               PLUGIN_DIR BLOCKLIST_FILE (平台由 deploy/platform.sh 提供)
+# 注意: 调用前必须 source deploy/platform.sh (需要 IS_MAC/IS_LINUX 判断服务单元)
 gen_deployed_json() {
     local out="${1:-$VIP_LIB/DEPLOYED.json}"
     [ -n "${PROJECT_DIR:-}" ] || { echo "manifest.sh: PROJECT_DIR 未设置"; return 1; }
@@ -78,7 +79,7 @@ for rel, dep in mapping:
         entry["user_config"] = True
     files[rel] = entry
 
-# 平台: 服务单元文件路径不同
+# 平台: 服务单元文件路径不同 (由 platform.sh 变量判断)
 svc = ""
 if os.environ.get("IS_LINUX") == "1":
     svc = "/etc/systemd/system/hermes-vipd.service"

@@ -8,6 +8,7 @@
 #       展开), 不硬编码路径。
 #
 # 用法:
+#   deploy/update.sh init [--repo PATH]   生成/重建 DEPLOYED.json (root; 旧安装升级用)
 #   deploy/update.sh check [--repo PATH]   只读比对, 普通用户可跑
 #   deploy/update.sh apply [--repo PATH]   root 同步差异, 自动重启 daemon
 #
@@ -17,20 +18,43 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
-VIP_LIB="/usr/local/lib/hermes-vip"
+VIP_LIB="${VIP_LIB:-/usr/local/lib/hermes-vip}"
 DEPLOYED_JSON="${DEPLOYED_JSON:-$VIP_LIB/DEPLOYED.json}"
+
+# 平台翻译器 (唯一分叉点)
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/platform.sh"
 
 # ── 参数 ──
 ACTION="${1:-check}"
 REPO="${2:-}"
-[ "$ACTION" = "check" ] || [ "$ACTION" = "apply" ] || { echo "用法: $0 {check|apply} [--repo PATH]"; exit 2; }
+[ "$ACTION" = "init" ] || [ "$ACTION" = "check" ] || [ "$ACTION" = "apply" ] || { echo "用法: $0 {init|check|apply} [--repo PATH]"; exit 2; }
 if [ "${REPO:-}" = "--repo" ]; then REPO="${3:-}"; fi
 [ -n "$REPO" ] || REPO="$PROJECT_DIR"
+
+# ── init: 生成/重建清单 (旧安装升级; 需要 root 写 VIP_LIB) ──
+if [ "$ACTION" = "init" ]; then
+    [ "$(id -u)" = "0" ] || { echo "❌ init 需要 root: sudo deploy/update.sh init"; exit 2; }
+    # shellcheck disable=SC1091
+    source "$SCRIPT_DIR/manifest.sh"
+    mkdir -p "$VIP_LIB/daemon"
+    PROJECT_DIR="$REPO" VIP_LIB="$VIP_LIB" \
+        VIP_ETC="${VIP_ETC:-/etc/hermes-vip}" \
+        CTL_BIN="${CTL_BIN:-/usr/local/bin/hermes-container-ctl}" \
+        RUN_BIN="${RUN_BIN:-/usr/local/bin/hermes-run}" \
+        PLUGIN_DIR="${PLUGIN_DIR:-$(eval echo ~${SUDO_USER:-$USER})/.hermes/plugins/hermes-vip}" \
+        BLOCKLIST_FILE="${BLOCKLIST_FILE:-/etc/hermes-vip/blocklist.yaml}" \
+        gen_deployed_json "$DEPLOYED_JSON"
+    chown "$(platform_svc_user)" "$DEPLOYED_JSON" 2>/dev/null || true
+    echo "✅ DEPLOYED.json 已生成: $DEPLOYED_JSON"
+    echo "   接下来: $0 check --repo $REPO  /  $0 apply --repo $REPO"
+    exit 0
+fi
 
 # ── 加载清单 ──
 if [ ! -f "$DEPLOYED_JSON" ]; then
     echo "❌ 找不到 $DEPLOYED_JSON"
-    echo "   请先运行 install.sh 完成安装 (会生成部署清单)。"
+    echo "   请先运行: sudo $0 init --repo $REPO"
     exit 2
 fi
 
@@ -135,11 +159,11 @@ for rel in "${!DEP_PATH[@]}"; do
         cp -a "$dep" "$dep.user-bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
         echo "  ⚠️  $rel 部署侧有本地修改, 已备份 → 覆盖"
     fi
-    # 同步 (Mac SIP → dd, Linux → cp)
+    # 同步 (统一走平台翻译器: Mac SIP→dd, Linux→cp)
     mkdir -p "$(dirname "$dep")"
-    if [ "$(uname)" = "Darwin" ]; then
-        rm -f "$dep"; dd if="$REPO/$rel" of="$dep" 2>/dev/null
-        chmod 755 "$dep" 2>/dev/null || true
+    if [ "$IS_MAC" = "1" ]; then
+        platform_bin_deploy "$REPO/$rel" "$dep"
+        chmod 644 "$dep" 2>/dev/null || true
     else
         cp "$REPO/$rel" "$dep"
         chmod 644 "$dep" 2>/dev/null || true
@@ -180,14 +204,7 @@ done
 if [ "$RESTART" = "1" ]; then
     echo ""
     echo "🔄 重启 vipd daemon..."
-    if [ "$(uname)" = "Darwin" ]; then
-        launchctl unload /Library/LaunchDaemons/com.hermes.vipd.plist 2>/dev/null || true
-        launchctl load /Library/LaunchDaemons/com.hermes.vipd.plist || true
-    elif command -v systemctl >/dev/null 2>&1; then
-        systemctl restart hermes-vipd || true
-    else
-        echo "  ⚠️  未找到 systemctl, 请手动重启 vipd daemon"
-    fi
+    platform_restart_vipd
 fi
 
 echo ""
