@@ -184,31 +184,16 @@ else
         echo "  📦 brew install colima docker..."
         sudo -u "$REAL_USER" brew install colima docker
     fi
+    MIRROR_FLAGS="--registry-mirror https://docker.1panel.live --registry-mirror https://docker.m.daocloud.io"
     if ! sudo -u "$REAL_USER" docker context ls 2>/dev/null | grep -q colima; then
-        echo "  🚀 colima start..."
-        sudo -u "$REAL_USER" colima start --memory 2
+        echo "  🚀 colima start (with registry mirror)..."
+        sudo -u "$REAL_USER" colima start --memory 2 $MIRROR_FLAGS
+    elif ! sudo -u "$REAL_USER" docker info 2>/dev/null | grep -q docker.1panel.live; then
+        echo "  🔧 colima restart with registry mirror..."
+        sudo -u "$REAL_USER" colima stop
+        sudo -u "$REAL_USER" colima start --memory 2 $MIRROR_FLAGS
     fi
     sudo -u "$REAL_USER" docker context use colima || true
-    # registry mirror（中国网络直连 docker.io 超时，同 167 方案）
-    COLIMA_CFG="$REAL_HOME/.colima/default/colima.yaml"
-    if [ -f "$COLIMA_CFG" ] && ! grep -q registry-mirrors "$COLIMA_CFG"; then
-        echo "  🔧 配置 Colima registry mirror..."
-        sudo -u "$REAL_USER" python3 - "$COLIMA_CFG" <<'PYEOF'
-import sys, yaml
-p = sys.argv[1]
-c = {}
-try:
-    c = yaml.safe_load(open(p)) or {}
-except Exception:
-    pass
-c.setdefault('docker', {})['daemon'] = {
-    'registry-mirrors': ['https://docker.1panel.live', 'https://docker.m.daocloud.io']
-}
-yaml.safe_dump(c, open(p, 'w'), allow_unicode=True, sort_keys=False)
-print('mirrors configured')
-PYEOF
-        sudo -u "$REAL_USER" colima restart
-    fi
     echo "  ✅ docker (Colima)"
 fi
 
