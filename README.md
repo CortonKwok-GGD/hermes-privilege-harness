@@ -73,6 +73,17 @@ sudo bash install.sh
 | ~/.hermes/plugins/hermes-vip/config.yaml | Runtime config |
 | /var/run/hermes-vip/request.sock | Daemon socket |
 
+
+## Uninstall
+
+```bash
+sudo bash uninstall.sh          # 交互确认，逐类删除
+sudo bash uninstall.sh --yes    # 自动确认全部（测试/CI）
+```
+
+先备份到 ~/hermes-vip-backup-uninstall-<时间戳>/ 并告知位置；
+删除仅限部署产物（daemon/ctl/插件/服务/容器/镜像）；
+用户数据（~/hermes-vm-root 等）不删除，只告知路径由你决定。
 ## 验证环境
 
 - **167**（hermes-test@192.168.1.167, Ubuntu 24.04, docker 29.1.3 + hermes-vm 双容器）
