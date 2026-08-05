@@ -42,20 +42,16 @@ LLM vip_sudo("apt install x")
 - hermes-vm-root 根持久化：apple 挂 /；docker 自动展开为系统目录挂载
   (/etc /root /home /usr/local /opt /var/lib /var/cache /var/log /srv) + 首次初始化
 
-## Quick Install
+## Quick Install（新用户一条命令）
 
 ```bash
-# Linux（验证机 167）
-sudo apt install docker.io
-# registry mirror: /etc/docker/daemon.json → docker.1panel.live
-sudo cp container/ctl.sh /usr/local/bin/hermes-container-ctl && chmod 755
-sudo cp container/hermes-run.sh /usr/local/bin/hermes-run && chmod 755
-
-# macOS（Colima 方向，待 Mac 部署验证）
-brew install colima docker
-colima start
-# 部署同上（ctl.sh / hermes-run.sh / 插件 / config）
+git clone <repo-url> && cd hermes-privilege-harness
+sudo bash install.sh
 ```
+
+自动完成：检测用户/Hermes(≥0.18.0) → 备份现有部署 → 部署 daemon/插件/ctl/hermes-run →
+安装依赖（Linux: apt docker.io + registry mirror；macOS: Homebrew + Colima + docker CLI）→
+构建镜像 → 创建双容器（hermes-vm / hermes-vm-no-net）→ 安装 daemon 服务 → 验证。
 
 ## Slash Commands
 
