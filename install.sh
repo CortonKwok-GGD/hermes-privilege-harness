@@ -187,6 +187,13 @@ else
         sudo -u "$REAL_USER" colima start --memory 2
     fi
     sudo -u "$REAL_USER" docker context use colima || true
+    # 注册 colima 登录自启（重启后 docker 自动可用, 对齐 Linux systemctl enable docker）
+    if sudo -u "$REAL_USER" brew services start colima >/dev/null 2>&1
+    then
+        echo "  colima auto-start registered (brew services)"
+    else
+        echo "  ⚠️  colima 自启注册失败, 可手动执行: brew services start colima"
+    fi
     echo "  ✅ docker (Colima)"
 fi
 

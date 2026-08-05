@@ -110,7 +110,12 @@ vip_sudo:
 12. **uninstall.sh**: 备份 + 交互逐类删除 + 恢复指引；用户数据（hermes-vm-root）不删只告知位置。
 13. **容器磁盘占用**: Apple container 用 `container system df`（df 是 system 子命令）。
 14. **git identity**: 容器环境全局 git config 不可靠 → 仓库级 git config user.name/email。
-15. **待办**: git push 17 个 commit；重启 Hermes 验 vip_sudo；Apple hermes-vm 回退 VM 保留待删
+15. **待办(2026-08-05 已完成)**: git push 已执行；重启 Hermes 验 vip_sudo 已通过(root)；Apple hermes-vm 回退 VM 保留待删
+16. **重启后 terminal 锁死(2026-08-05 修复)**: Colima 不随开机自启 → docker daemon 不在 → ctl exec 误报
+    "container hermes-vm does not exist"。修复: ① install.sh Mac 分支加 `brew services start colima`
+    注册登录自启(对齐 Linux systemctl enable docker); ② ctl.sh cmd_exec 加 docker info 存活探测,
+    daemon 不可达快速失败并给可操作命令(不进 2s/60s/600s 重试), 区分"运行时没起"vs"容器缺失"。
+    遗留: brew services 是 LaunchAgent 依赖登录, 纯 SSH 无 GUI 场景需 LaunchDaemon + sudo -u mac
 
 ## Dev Rules
 

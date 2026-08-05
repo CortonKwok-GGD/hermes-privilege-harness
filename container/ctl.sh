@@ -132,6 +132,23 @@ read_config_vals() {
 
 # ── exec：容器内执行（平台无关核心）──────────────────────────────
 cmd_exec() {
+    # daemon 存活探测 (docker driver): 区分"运行时没起" vs "容器缺失",
+    # 避免重启后(Colima 未自启)误报 container does not exist。
+    # daemon 不可达 = 快速失败给可操作命令, 不进 2s/60s/600s 重试。
+    if [ "$DRIVER" = "docker" ]
+    then
+        if ! docker info >/dev/null 2>&1
+        then
+            echo "Error: Docker daemon not reachable (sandbox runtime down)." >&2
+            if [ -d /System/Library/CoreServices ]
+            then
+                echo "Fix: colima start   (auto-start at login: brew services start colima)" >&2
+            else
+                echo "Fix: sudo systemctl start docker   (or: systemctl enable --now docker)" >&2
+            fi
+            exit 1
+        fi
+    fi
     local no_net=0 cname
     [ "${1:-}" = "--no-net" ] && no_net=1 && shift
     [ $# -eq 0 ] && echo "Usage: ctl exec [--no-net] <command>" >&2 && exit 1
