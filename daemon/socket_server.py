@@ -462,6 +462,7 @@ class SocketServer:
         # 6. 审批结果（区分 timeout / deny：超时≠拒绝）
         decision = entry.result
         if decision["action"] == "timeout":
+            audit.timeout(entry.req_id)
             try:
                 _send_json(client, {"status": "timeout", "req_id": entry.req_id, "error": "审批超时"})
             except: pass
@@ -475,12 +476,18 @@ class SocketServer:
         # 7. 执行命令
         exec_result = self._executor.execute(command)
 
-        # 8. 返回结果（client 可能已断开）
+        # 8. 审计执行结果
+        audit.execute(entry.req_id,
+                      exec_result.get("exit_code", -1),
+                      exec_result.get("duration_ms", 0),
+                      command)
+
+        # 9. 返回结果（client 可能已断开）
         try:
             _send_json(client, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
         except: pass
 
-        # 9. 缓存结果（供 /vip-approve 取回）
+        # 10. 缓存结果（供 /vip-approve 取回）
         _store_result(entry.req_id, {"status": "approved", "req_id": entry.req_id, "result": exec_result})
 
     def _handle_sudo_execute(self, client: socket.socket, req: dict,
@@ -529,6 +536,8 @@ class SocketServer:
         logger.info("sudo_execute cmd=%s peer=%d stamp=OK", command[:60], peer_uid)
         audit.request("direct", command, origin.get("channel", "vip_sudo"))
         exec_result = self._executor.execute(command)
+        audit.execute("direct", exec_result.get("exit_code", -1),
+                      exec_result.get("duration_ms", 0), command)
         _send_json(client, {"status": "approved", "result": exec_result})
         logger.info("sudo_execute done exit_code=%d", exec_result.get("exit_code", -1))
 

@@ -11,11 +11,15 @@ append-only 日志，记录 VIP daemon 每个操作。
 
 import logging
 import os
+import threading
 import time
 
 logger = logging.getLogger("vipd.audit")
 
 AUDIT_LOG = "/var/log/hermes-vip/audit.log"
+
+# FIFO 上限: 超过 MAX_AUDIT_BYTES 滚动保留 .1 备份, 最旧一代被覆盖丢弃
+MAX_AUDIT_BYTES = 20 * 1024 * 1024  # 20MB
 
 
 class AuditLogger:
@@ -24,6 +28,7 @@ class AuditLogger:
     def __init__(self, path: str = AUDIT_LOG):
         self._path = path
         self._fd = None
+        self._lock = threading.Lock()
 
     def open(self):
         """打开审计日志文件（append mode）"""
@@ -37,30 +42,53 @@ class AuditLogger:
             self._fd = None
 
     def close(self):
-        if self._fd:
-            self._fd.close()
-            self._fd = None
+        with self._lock:
+            if self._fd:
+                self._fd.close()
+                self._fd = None
+
+    def _rotate_if_needed(self):
+        """FIFO 滚动: 超限时 audit.log → audit.log.1（覆盖旧备份）, 再开新文件。
+        当前文件保持 append-only；最旧一代被覆盖即"先进先出丢弃"。"""
+        try:
+            if not (os.path.exists(self._path)
+                    and os.path.getsize(self._path) > MAX_AUDIT_BYTES):
+                return
+            backup = self._path + ".1"
+            if self._fd:
+                self._fd.close()
+                self._fd = None
+            if os.path.exists(backup):
+                os.remove(backup)
+            os.rename(self._path, backup)
+            self._fd = open(self._path, "a+b")
+            logger.info("audit log rotated (%d bytes -> %s)",
+                        MAX_AUDIT_BYTES, backup)
+        except OSError as exc:
+            logger.warning("audit rotate failed: %s", exc)
 
     def log(self, event: str, **fields):
         """写入一条审计记录"""
-        if not self._fd:
-            return
+        with self._lock:
+            self._rotate_if_needed()
+            if not self._fd:
+                return
 
-        now = time.strftime("%Y-%m-%d %H:%M:%S")
-        parts = [f"[{now}]", event.upper()]
-        for k, v in fields.items():
-            if v is None:
-                v = ""
-            # 清理值中的换行和不可见字符
-            sv = str(v).replace("\n", "\\n").replace("\r", "\\r")[:200]
-            parts.append(f"{k}={sv}")
+            now = time.strftime("%Y-%m-%d %H:%M:%S")
+            parts = [f"[{now}]", event.upper()]
+            for k, v in fields.items():
+                if v is None:
+                    v = ""
+                # 清理值中的换行和不可见字符
+                sv = str(v).replace("\n", "\\n").replace("\r", "\\r")[:200]
+                parts.append(f"{k}={sv}")
 
-        line = "  ".join(parts) + "\n"
-        try:
-            self._fd.write(line.encode("utf-8"))
-            self._fd.flush()
-        except OSError as exc:
-            logger.error("审计日志写入失败: %s", exc)
+            line = "  ".join(parts) + "\n"
+            try:
+                self._fd.write(line.encode("utf-8"))
+                self._fd.flush()
+            except OSError as exc:
+                logger.error("审计日志写入失败: %s", exc)
 
     # ── 常用事件快捷方法 ──
 
@@ -85,6 +113,7 @@ class AuditLogger:
                  duration_ms=str(duration_ms), command=command[:60])
 
     def start(self):
+        self.open()
         self.log("daemon_start", pid=str(os.getpid()))
 
     def stop(self):
