@@ -79,13 +79,17 @@ cpu = cont.get('cpus', 2)
 workdir = sb.get('workdir', '/hermes-workspace')
 vols = []
 driver = os.environ.get('HERMES_DRIVER', 'docker')
+rpd = cont.get('root_persist_dirs', [])
 for m in sb.get('mounts', []):
     h = os.path.expandvars(os.path.expanduser(m.get('host_path', '')))
     g = os.path.expandvars(os.path.expanduser(m.get('container_path', '')))
     if not h or not g:
         continue
     if g == '/' and driver == 'docker':
-        continue  # docker 不允许 bind mount 到 /（Apple container 支持根替换）
+        # docker 不允许 bind mount 到 /: 展开为系统目录挂载（等价根持久化）
+        for d in rpd:
+            vols.append(f'-v {h}{d}:{d}')
+        continue
     r = ':ro' if not m.get('writable', True) else ''
     vols.append(f'-v {h}:{g}{r}')
 retry = sb.get('retry', {}).get('intervals', [2, 60, 600])
@@ -96,6 +100,7 @@ print(cpu)
 print(workdir)
 print(' '.join(vols))
 print(' '.join(str(x) for x in retry))
+print(' '.join(str(x) for x in rpd))
 PYEOF
 }
 
@@ -109,6 +114,7 @@ read_config_vals() {
     WORKDIR=$(echo "$cfg_out" | sed -n '5p')
     VOLS=$(echo "$cfg_out" | sed -n '6p')
     RETRY_INT=$(echo "$cfg_out" | sed -n '7p')
+    RPD=$(echo "$cfg_out" | sed -n '8p')
 }
 
 # ── exec：容器内执行（平台无关核心）──────────────────────────────
@@ -184,10 +190,46 @@ cmd_exec() {
 }
 
 # ── create：按 config 创建并启动（create+start 替代 run, 避开 registry 验证）──
+# 初始化系统目录挂载（docker driver: 根挂载展开后首次从镜像 cp + chown）
+init_system_dirs() {
+    [ "$DRIVER" != "docker" ] && return
+    local root_src=""
+    root_src=$(python3 - "$CFG" <<'PYEOF'
+import os, sys, yaml
+c = {}
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+except Exception:
+    pass
+for m in c.get('sandbox', {}).get('mounts', []):
+    if m.get('container_path') == '/':
+        print(os.path.expandvars(os.path.expanduser(m.get('host_path', ''))))
+        break
+PYEOF
+)
+    [ -z "$root_src" ] && return
+    [ -f "$root_src/.ctl-init" ] && return
+    [ -z "$RPD" ] && { touch "$root_src/.ctl-init"; return; }
+    echo "Initializing system dirs under $root_src (first run)..."
+    local vols2=""
+    for d in $RPD; do
+        mkdir -p "$root_src$d"
+        vols2="$vols2 -v $root_src$d:/i$d"
+    done
+    docker run --rm -e RPD="$RPD" -e INIT_UID="$(id -u)" -e INIT_GID="$(id -g)" $vols2 alpine:3.20 sh -c '
+        for d in $RPD; do
+            cp -a "$d/." "/i$d/" 2>/dev/null || true
+            chown -R "$INIT_UID:$INIT_GID" "/i$d" 2>/dev/null || true
+        done
+        echo INIT_OK'
+    touch "$root_src/.ctl-init"
+}
+
 cmd_create() {
     local no_net=0 net_flag="" cname
     [ "${1:-}" = "--no-net" ] && no_net=1 && shift
     read_config_vals
+    init_system_dirs
     cname="$CN"
     if [ "$no_net" = "1" ]; then
         cname="${CN}-no-net"

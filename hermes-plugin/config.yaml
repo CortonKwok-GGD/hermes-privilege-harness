@@ -12,6 +12,7 @@ sandbox:
     image: hermes-vm:latest
     memory_mb: 2048
     cpus: 4
+    root_persist_dirs: [/etc, /root, /home, /usr/local, /opt, /var/lib, /var/cache, /var/log, /srv]
 
   # hermes-run 重试策略
   retry:
