@@ -212,6 +212,20 @@ for rel in ${RELS[@]}; do
 done
 fi
 
+# ── 确保 hermes-run 审计日志文件存在且组可写 ──
+_need_runlog=0
+if [ "${#APPLIED[@]}" -gt 0 ]; then
+    for _rel in ${APPLIED[@]}; do
+        [ "$_rel" = "container/hermes-run.sh" ] && _need_runlog=1
+    done
+fi
+if [ "$_need_runlog" = "1" ]; then
+    mkdir -p /var/log/hermes-vip
+    touch /var/log/hermes-vip/run.log 2>/dev/null || true
+    chmod 664 /var/log/hermes-vip/run.log 2>/dev/null || true
+    chmod 775 /var/log/hermes-vip 2>/dev/null || true
+fi
+
 # ── 更新清单快照 ──
 if [ ${#APPLIED[@]} -gt 0 ]; then
     echo ""
