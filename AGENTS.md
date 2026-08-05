@@ -1,7 +1,8 @@
 # Hermes VIP — AI Agent Guide
 
-> v9.1: terminal commands run in a container. vip_sudo is the only way out.
+> v9.2: terminal commands run in a container. vip_sudo is the only way out.
 > 统一 ctl：docker 语义两端一致（Linux 原生 docker，macOS 用 Colima 提供 dockerd）。
+> 统一部署: deploy/update.sh 增量比对/更新（bash 3.2 兼容），平台差异只在 deploy/platform.sh。
 
 ## Quick Start (for a new agent session)
 
@@ -71,6 +72,8 @@ vip_sudo:
 | `hermes-plugin/*` | `~/.hermes/plugins/hermes-vip/` |
 | `daemon/*` | `/usr/local/lib/hermes-vip/` |
 | `daemon/vipd.py` | `/usr/local/bin/hermes-vipd` |
+| `deploy/update.sh` | `/usr/local/bin/hermes-vip-update`（install.sh 生成） |
+| `deploy/DEPLOYED.json` | `/usr/local/lib/hermes-vip/DEPLOYED.json`（安装时生成） |
 
 ## Slash commands
 
@@ -116,6 +119,28 @@ vip_sudo:
     注册登录自启(对齐 Linux systemctl enable docker); ② ctl.sh cmd_exec 加 docker info 存活探测,
     daemon 不可达快速失败并给可操作命令(不进 2s/60s/600s 重试), 区分"运行时没起"vs"容器缺失"。
     遗留: brew services 是 LaunchAgent 依赖登录, 纯 SSH 无 GUI 场景需 LaunchDaemon + sudo -u mac
+17. **vip_sudo 审批超时语义(2026-08-05 修复)**: 三层超时 — Hermes 审批卡 gateway_timeout=300s、
+    插件 stamp TTL(原 15s 改 300s, 对齐审批卡)、daemon ApprovalQueue TTL(默认 300s)。
+    根因: 审批卡还等你批, 插件 stamp 已过期 → _verify 返回 REJECTED → 用户批准了却看到"拒绝"。
+    socket_server 区分 timeout/deny 回给 LLM(超时≠拒绝)。resolve() 加 expired 检查(过期批准 not_found)。
+18. **运行审计日志(2026-08-05 新增)**: audit.py 曾有死代码(open() 从未调用, audit.log 一行不写)已修复;
+    socket_server 补 audit.timeout/execute 调用。hermes-run 每次执行记录 run.log(命令/rc/耗时)。
+    两者 FIFO: 超 20MB/10MB 滚动保留 .1, 最旧覆盖。路径: /var/log/hermes-vip/{audit,run}.log。
+19. **deploy/update.sh 增量部署(2026-08-05 新增)**: DEPLOYED.json 记录 repo→部署→sha256 快照,
+    安装时生成(每用户路径不同, 脚本检测不硬编码)。update.sh auto: init(缺)→check→apply(有差异才同步)。
+    check 分类: UPDATE-AVAILABLE / LOCALLY-MODIFIED(apply 前备份 user-bak) / NOT-DEPLOYED。
+    config.yaml/blocklist.yaml 是 user-config(track_repo=false), apply 绝不用模板覆盖(保护 trusted_user)。
+    repo 位置从清单 repo_root 自动读(wrapper 任意位置调用), 不用传 --repo。
+20. **bash 3.2 兼容(2026-08-05)**: macOS 自带 bash 3.2 不支持关联数组 declare -A 和 ${var^^}。
+    update.sh 用平行普通数组 + 索引查找; install.sh 已有 IS_MAC/IS_LINUX 分支。验证: docker bash:3.2
+    镜像做语法检查(167 拉 bash:3.2), 不能只信 Linux bash 5.x。
+21. **apply 权限 bug(2026-08-05 修复)**: update.sh apply 曾无条件 chmod 644, 覆盖 platform_bin_deploy
+    的 755 → hermes-run 变 644 → 容器沙箱全锁(Permission denied)。修复: 按部署路径 basename 判断
+    (hermes-container-ctl/hermes-run/hermes-vipd/hermes-vip-update → 755, 其余 644)。
+22. **容器 runtime 与 hermes-vm-root 边界**: 容器沙箱入口 hermes-run 是**宿主机** /usr/local/bin 的
+    (插件生成命令串, docker exec 进容器)。hermes-vm-root 是容器根持久化(Apple driver 直挂 / /
+    docker root_persist_dirs 展开), 不是 runtime, 不要对它 chmod/chown。修复宿主工具权限只需动
+    /usr/local/bin。
 
 ## Dev Rules
 
@@ -128,6 +153,10 @@ vip_sudo:
 - **Git push**: VS Codium / Mac 命令行；共享卷 git 由 Agent 做，用户只 push；push 前查 remote
 - **测试**: guard 逻辑单测 /tmp/test_guard.py（10/10）；tests/ 目录测试在容器环境
   in_sandbox() 短路 check() 是既有问题（测试设计给非沙箱环境）
+- **跨平台验证**: 只测 167(Linux bash 5.x)不够 — Mac 的 bash 3.2 是独立兼容层。
+  改脚本后必须 bash:3.2 容器语法检查 + 真实 apply 路径测试(不是只 check)
+- **部署纪律**: 用户更新 = `hermes-vip-update` 一条命令(或 bash deploy/update.sh auto)。
+  不写平台专用脚本、不硬编码路径 — 平台差异只在 deploy/platform.sh
 
 ## Key Files Reference
 
@@ -138,7 +167,10 @@ vip_sudo:
 | `hermes-plugin/guard.py` | 路由 + vip_sudo handler + 高置信提权检测 |
 | `hermes-plugin/__init__.py` | 注册 hooks/tools/slash + transform 标注 |
 | `hermes-plugin/sandbox/__init__.py` | 统一 build_sandbox_cmd / config |
-| `daemon/*` | Unix socket + executor（共享，两分支相同） |
+| `daemon/*` | Unix socket + executor + audit（共享，两分支相同） |
+| `deploy/platform.sh` | 平台翻译器（唯一分叉点: dd/cp, launchd/systemd, 用户/组） |
+| `deploy/manifest.sh` | 部署映射单一事实源（install.sh 调用生成 DEPLOYED.json） |
+| `deploy/update.sh` | 增量比对/更新（auto/init/check/apply, bash 3.2 兼容） |
 
 ---
 See README.md for human overview, WBS.md for version history and lessons learned.

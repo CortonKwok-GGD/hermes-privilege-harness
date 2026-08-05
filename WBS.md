@@ -1,5 +1,41 @@
 # Hermes Privilege Harness — WBS
 
+## 2026-08-05: v9.2 — 审批超时语义 + 运行审计 + 统一部署工具链
+
+### 决策
+1. **vip_sudo 三层超时对齐**: Hermes 审批卡 gateway_timeout=300s / 插件 stamp TTL
+   15→300 / daemon ApprovalQueue TTL 300。根因: 用户批准稍慢, stamp 已过期 →
+   REJECTED → 批准了却显示"拒绝"。socket_server 区分 timeout/deny 回 LLM。
+2. **运行审计日志**: audit.py open() 从未调用(死代码, audit.log 一行不写)已修;
+   hermes-run 每次执行记录 run.log。两者 FIFO 滚动(20MB/10MB, .1 保留一代)。
+3. **deploy/update.sh 增量部署**: DEPLOYED.json 安装时生成(每用户路径不同, 检测不硬编码)。
+   auto: init→check→apply。user-config 不覆盖。repo 从清单 repo_root 自动读。
+4. **deploy/platform.sh 平台翻译器**: 业务脚本零平台判断, 差异只在此文件
+   (dd/cp、launchd/systemd、_hermesvip:daemon vs hermes-vip:hermes-vip)。
+5. **bash 3.2 兼容**: Mac 自带 bash 3.2 无关联数组 → update.sh 用平行数组+索引。
+6. **不写平台专用脚本**: 用户入口只有 hermes-vip-update / update.sh auto,
+   repo 位置自动检测, 零硬编码路径。
+
+### 已验证
+- 167: 超时请求回 status=timeout、过期批准 not_found、audit 全事件落盘、
+  hermes-run rc 正确记录、update.sh check 差异分类正确
+- bash:3.2 镜像语法检查: update.sh/platform.sh/manifest.sh 全过
+- Mac 实测: update.sh 一键 init→check→apply 通过, 全部一致
+
+### 踩坑(Mac 实测暴露)
+- bash 3.2 不支持 declare -A / ${var^^}(167 是 bash 5 测不出) → 平行数组
+- apply 无条件 chmod 644 覆盖 platform_bin_deploy 的 755 → hermes-run 644 → 容器全锁
+  → 按部署路径 basename 设权限
+- hermes-vm-root 是容器根持久化(Apple driver 挂 / / docker root_persist_dirs 展开),
+  不是 runtime; 容器沙箱入口 hermes-run 是宿主机 /usr/local/bin 的
+- 只测 167 不够: 必须 bash:3.2 语法检查 + 真实 apply 路径测试
+
+### 待办
+- [ ] Mac 重启 Hermes(guard.py stamp TTL 生效)
+- [ ] push 8 commits: f5b498f(超时≠拒绝) 0f941da(vipsudo审计) 24737ce(hermes-run记录)
+  3bd42a1(update.sh) 0303492(platform.sh) 652f52b(去Mac专用脚本) e87e09a(bash3.2)
+  dc70065(权限修复) cd069d7(run.log自动创建)
+
 ## 2026-08-05: v9.1 统一 ctl — docker 两端一致 + Colima 方向
 
 ### 决策

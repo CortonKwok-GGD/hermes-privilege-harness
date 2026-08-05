@@ -20,7 +20,7 @@ Hermes VIP gives an LLM two things:
 | Tool routing | 3-path dispatch | Hermes native |
 | Install | install-macos.sh / install-linux.sh | same installer |
 
-## 架构（v9.1 统一 ctl）
+## 架构（v9.2 统一 ctl + 统一部署）
 
 ```
 LLM terminal("cmd")
@@ -51,7 +51,31 @@ sudo bash install.sh
 
 自动完成：检测用户/Hermes(≥0.18.0) → 备份现有部署 → 部署 daemon/插件/ctl/hermes-run →
 安装依赖（Linux: apt docker.io + registry mirror；macOS: Homebrew + Colima + docker CLI）→
-构建镜像 → 创建双容器（hermes-vm / hermes-vm-no-net）→ 安装 daemon 服务 → 验证。
+构建镜像 → 创建双容器（hermes-vm / hermes-vm-no-net）→ 安装 daemon 服务 → 生成 DEPLOYED.json → 验证。
+
+## Update（repo 更新后同步部署，一键）
+
+```bash
+hermes-vip-update                      # install.sh 已生成；或
+bash deploy/update.sh                  # 直接跑 repo 里的脚本（root 用 admin 权限执行）
+```
+
+自动：生成/复用 DEPLOYED.json → 比对 repo 与部署 sha256 → 同步差异文件 →
+重启 vipd（daemon 变更时）→ 提示重启 Hermes（插件变更时）。
+
+- 平台差异收敛在 deploy/platform.sh（Mac SIP→dd / Linux cp、launchd/systemd、用户/组）
+- config.yaml / blocklist.yaml 是用户配置，update 不会用模板覆盖（保护 trusted_user）
+- 本地改过的部署文件 apply 前自动备份为 *.user-bak.<时间戳>
+- bash 3.2 兼容（macOS 自带 bash 也直接跑）
+
+## 日志（追溯）
+
+```bash
+tail -f /var/log/hermes-vip/audit.log   # vipsudo 审批链: request/approve/deny/timeout/execute
+tail -f /var/log/hermes-vip/run.log     # hermes-run 每次容器执行: cmd/rc/dur_ms
+```
+
+超时语义：vip_sudo 审批超时 → LLM 收到"超时"（timeout），与用户显式"拒绝"（denied）区分。
 
 ## Slash Commands
 
@@ -72,6 +96,10 @@ sudo bash install.sh
 | /usr/local/bin/hermes-vipd | Daemon entry |
 | ~/.hermes/plugins/hermes-vip/config.yaml | Runtime config |
 | /var/run/hermes-vip/request.sock | Daemon socket |
+| /usr/local/bin/hermes-vip-update | Update entry（install.sh 生成） |
+| /usr/local/lib/hermes-vip/DEPLOYED.json | Deployment snapshot (repo→path→sha256) |
+| /var/log/hermes-vip/audit.log | vipsudo 审批链审计（FIFO 20MB） |
+| /var/log/hermes-vip/run.log | hermes-run 容器执行记录（FIFO 10MB） |
 
 
 ## Uninstall
@@ -87,7 +115,7 @@ sudo bash uninstall.sh --yes    # 自动确认全部（测试/CI）
 ## 验证环境
 
 - **167**（hermes-test@192.168.1.167, Ubuntu 24.04, docker 29.1.3 + hermes-vm 双容器）
-- Mac 部署（Colima）待执行
+- Mac（Colima + docker, macOS 26, bash 3.2）— 部署/更新/日志已验证
 
 ---
 See [AGENTS.md](AGENTS.md) for the full AI agent guide, [WBS.md](WBS.md) for version history and lessons learned.
