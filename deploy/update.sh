@@ -36,6 +36,11 @@ ACTION="${1:-auto}"
 REPO="${2:-}"
 [ "$ACTION" = "auto" ] || [ "$ACTION" = "init" ] || [ "$ACTION" = "check" ] || [ "$ACTION" = "apply" ] || { echo "用法: $0 {auto|init|check|apply} [--repo PATH]"; exit 2; }
 if [ "${REPO:-}" = "--repo" ]; then REPO="${3:-}"; fi
+# 默认 repo 位置: 优先读清单里的 repo_root (wrapper/任意位置调用都能找到),
+# 否则回退脚本所在目录的上级 (直接跑 repo 里的脚本时)。
+if [ -z "$REPO" ] && [ -f "$DEPLOYED_JSON" ]; then
+    REPO="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1])).get("repo_root",""))' "$DEPLOYED_JSON" 2>/dev/null || true)"
+fi
 [ -n "$REPO" ] || REPO="$PROJECT_DIR"
 
 # ── init: 生成/重建清单 (旧安装升级; 需要 root 写 VIP_LIB) ──

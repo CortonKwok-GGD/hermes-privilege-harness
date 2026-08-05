@@ -224,8 +224,8 @@ PROJECT_DIR="$PROJECT_DIR" VIP_LIB="$VIP_LIB" VIP_ETC="$VIP_ETC" \
 echo "📦 部署更新入口 (hermes-vip-update)..."
 cat > /usr/local/bin/hermes-vip-update <<WRAP
 #!/bin/bash
-# 统一增量更新入口: auto(init→check→apply)。平台差异在 deploy/platform.sh。
-exec bash "$PROJECT_DIR/deploy/update.sh" auto --repo "$PROJECT_DIR" "\$@"
+# 统一增量更新入口: auto(init→check→apply)。repo 位置从 DEPLOYED.json 自动读取。
+exec bash "$PROJECT_DIR/deploy/update.sh" auto
 WRAP
 chmod 755 /usr/local/bin/hermes-vip-update
 
