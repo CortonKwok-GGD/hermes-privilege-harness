@@ -91,6 +91,8 @@ pkill -f "hermes-vipd" 2>/dev/null || true
 pkill -f "daemon.vipd" 2>/dev/null || true
 sleep 1
 rm -f "$VIP_RUN/request.sock" "$VIP_RUN/control.sock" 2>/dev/null || true
+rm -rf /usr/local/etc/hermes-vip 2>/dev/null || true                       # 旧 blocklist 目录残留
+rm -f "$HERMES_HOME/scripts/hermes-vipd-watchdog.sh" 2>/dev/null || true  # 旧 watchdog（launchd 已取代）
 
 echo "📦 部署 daemon..."
 mkdir -p "$VIP_LIB/daemon" "$VIP_ETC" "$VIP_RUN" "$VIP_LOG"
@@ -126,11 +128,7 @@ PYEOF
 chmod 644 "$VIP_ETC/config.yaml"
 
 # blocklist: 新路径优先，旧路径(/usr/local/etc/hermes-vip)迁移
-if [ ! -f "$BLOCKLIST_FILE" ] && [ -f "/usr/local/etc/hermes-vip/blocklist.yaml" ]; then
-    mv /usr/local/etc/hermes-vip/blocklist.yaml "$BLOCKLIST_FILE"
-    rmdir /usr/local/etc/hermes-vip 2>/dev/null || true
-fi
-[ -f "$BLOCKLIST_FILE" ] || cp "$PROJECT_DIR/examples/blocklist.yaml" "$BLOCKLIST_FILE"
+cp "$PROJECT_DIR/examples/blocklist.yaml" "$BLOCKLIST_FILE"   # 总是用最新模板（旧文件已备份）
 chmod 640 "$BLOCKLIST_FILE" 2>/dev/null || true
 
 echo "📦 部署插件..."
