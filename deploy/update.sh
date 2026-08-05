@@ -28,7 +28,8 @@ DEPLOYED_JSON="${DEPLOYED_JSON:-$VIP_LIB/DEPLOYED.json}"
 source "$SCRIPT_DIR/platform.sh"
 
 # 部署清单解析用关联数组 (必须在 load_manifest 前声明)
-declare -A DEP_PATH DEP_SHA DEP_TRACK
+# bash 3.2 兼容: 不用关联数组, 用平行普通数组 + 索引查找
+RELS=() PATHS=() SHAS=() TRACKED=()
 REPO_ROOT=""
 
 # ── 参数 ──
@@ -71,9 +72,10 @@ load_manifest() {
     while IFS=$'\t' read -r rel path sha track; do
         [ "$rel" = "__ROOT__" ] && { REPO_ROOT="$path"; continue; }
         track="${track:-true}"
-        DEP_PATH["$rel"]="$path"
-        DEP_SHA["$rel"]="$sha"
-        [ "$track" = "false" ] && DEP_TRACK["$rel"]=0
+        RELS+=("$rel")
+        PATHS+=("$path")
+        SHAS+=("$sha")
+        [ "$track" = "false" ] && TRACKED+=("$rel")
     done < <(python3 -c '
 import json, sys
 d = json.load(open(sys.argv[1]))
@@ -89,22 +91,40 @@ sha() { python3 -c 'import hashlib,sys;
 try: print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())
 except Exception: pass' "$1"; }
 
+# ── 辅助: 索引查找 (bash 3.2 无关联数组) ──
+find_index() {
+    local i
+    for i in "${!RELS[@]}"; do
+        [ "${RELS[$i]}" = "$1" ] && { echo "$i"; return 0; }
+    done
+    echo -1
+}
+is_tracked() {
+    local i
+    for i in "${!TRACKED[@]}"; do
+        [ "${TRACKED[$i]}" = "$1" ] && return 1
+    done
+    return 0
+}
+
 do_check() {
 # ── 比对 ──
 local DIFF_COUNT=0
 report_diff() { # rel status repo_sha dep_sha
-    echo "  [${2^^}] $1"
+    echo "  [$2] $1"
     [ -n "${3:-}" ] && echo "      repo_sha:    ${3:-无}"
     [ -n "${4:-}" ] && echo "      deployed_sha: ${4:-无}"
     DIFF_COUNT=$((DIFF_COUNT+1))
 }
 
 compare_file() {
-    local rel="$1" dep="${DEP_PATH[$rel]:-}"
-    if [ "${DEP_TRACK[$rel]:-1}" = "0" ]; then
+    local rel="$1" idx dep
+    if ! is_tracked "$rel"; then
         return  # 只记录部署侧, 不参与 repo 比对
     fi
-    [ -n "$dep" ] || { report_diff "$rel" "no-mapping"; return; }
+    idx=$(find_index "$rel")
+    [ "$idx" = "-1" ] && { report_diff "$rel" "no-mapping"; return; }
+    dep="${PATHS[$idx]}"
     local rsha dsha
     rsha=$(sha "$REPO/$rel")
     dsha=$(sha "$dep")
@@ -118,7 +138,7 @@ compare_file() {
         report_diff "$rel" "not-deployed" "$rsha" ""
     elif [ -z "$rsha" ]; then
         report_diff "$rel" "removed-from-repo" "" "$dsha"
-    elif [ "$dsha" = "${DEP_SHA[$rel]:-}" ]; then
+    elif [ "$dsha" = "${SHAS[$idx]:-}" ]; then
         # 部署侧与快照一致, repo 更新了 → 可安全 apply
         report_diff "$rel" "update-available" "$rsha" "$dsha"
     else
@@ -130,7 +150,7 @@ compare_file() {
 echo "📋 VIP 部署比对 (repo=$REPO)"
 echo "   清单: $DEPLOYED_JSON"
 echo ""
-for rel in "${!DEP_PATH[@]}"; do
+for rel in ${RELS[@]+"${RELS[@]}"}; do
     compare_file "$rel"
 done
 
@@ -154,12 +174,13 @@ do_apply() {
     echo ""
     echo "🔧 同步差异文件..."
 APPLIED=()
-for rel in "${!DEP_PATH[@]}"; do
+if [ "${#RELS[@]}" -gt 0 ]; then
+for rel in ${RELS[@]}; do
     # user-config / service_unit: 只记录不更新
-    if [ "${DEP_TRACK[$rel]:-1}" = "0" ]; then
-        continue
-    fi
-    dep="${DEP_PATH[$rel]}"
+    is_tracked "$rel" || continue
+    idx=$(find_index "$rel")
+    [ "$idx" = "-1" ] && continue
+    dep="${PATHS[$idx]}"
     rsha=$(sha "$REPO/$rel")
     dsha=$(sha "$dep")
     [ "$rsha" = "$dsha" ] && continue
@@ -168,7 +189,7 @@ for rel in "${!DEP_PATH[@]}"; do
         continue
     fi
     # 本地被改过的文件: 备份后覆盖
-    if [ -n "$dsha" ] && [ "$dsha" != "${DEP_SHA[$rel]:-}" ]; then
+    if [ -n "$dsha" ] && [ "$dsha" != "${SHAS[$idx]:-}" ]; then
         cp -a "$dep" "$dep.user-bak.$(date +%Y%m%d-%H%M%S)" 2>/dev/null || true
         echo "  ⚠️  $rel 部署侧有本地修改, 已备份 → 覆盖"
     fi
@@ -184,6 +205,7 @@ for rel in "${!DEP_PATH[@]}"; do
     APPLIED+=("$rel")
     echo "  ✅ $rel -> $dep"
 done
+fi
 
 # ── 更新清单快照 ──
 if [ ${#APPLIED[@]} -gt 0 ]; then
