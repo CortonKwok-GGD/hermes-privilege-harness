@@ -17,9 +17,9 @@ trap 'rm -f "$PIDFILE" "$LOCKFILE"' EXIT
 
 # 确保 socket 目录存在（macOS 重启后 /var/run 是 tmpfs，会清空）
 if [ ! -d "$VIP_RUN" ]; then
-    mkdir -p "$VIP_RUN"
-    chown "$VIP_USER:daemon" "$VIP_RUN" 2>/dev/null || chown "$VIP_USER:wheel" "$VIP_RUN"
-    chmod 755 "$VIP_RUN"
+    sudo mkdir -p "$VIP_RUN"
+    sudo chown "$VIP_USER:daemon" "$VIP_RUN" 2>/dev/null || sudo chown "$VIP_USER:wheel" "$VIP_RUN"
+    sudo chmod 755 "$VIP_RUN"
 fi
 
 start_daemon() {

@@ -229,6 +229,13 @@ cmd_create() {
     local no_net=0 net_flag="" cname
     [ "${1:-}" = "--no-net" ] && no_net=1 && shift
     read_config_vals
+    # CPU 上限检测：config 值超过可用 CPU 则下调（167 只有 2 CPU）
+    local cpu_limit=2
+    cpu_limit=$(nproc 2>/dev/null || echo 2)
+    if [ "$CPU" -gt "$cpu_limit" ]; then
+        echo "Warning: config cpus=$CPU > available $cpu_limit, using $cpu_limit"
+        CPU=$cpu_limit
+    fi
     init_system_dirs
     cname="$CN"
     if [ "$no_net" = "1" ]; then
