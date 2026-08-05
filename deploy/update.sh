@@ -197,11 +197,16 @@ for rel in ${RELS[@]}; do
     mkdir -p "$(dirname "$dep")"
     if [ "$IS_MAC" = "1" ]; then
         platform_bin_deploy "$REPO/$rel" "$dep"
-        chmod 644 "$dep" 2>/dev/null || true
     else
         cp "$REPO/$rel" "$dep"
-        chmod 644 "$dep" 2>/dev/null || true
     fi
+    # 权限按类型: 可执行脚本(容器控制/入口 wrapper)保持 755, 其余文件 644
+    case "$(basename "$dep")" in
+        hermes-container-ctl|hermes-run|hermes-vipd|hermes-vip-update)
+            chmod 755 "$dep" 2>/dev/null || true ;;
+        *)
+            chmod 644 "$dep" 2>/dev/null || true ;;
+    esac
     APPLIED+=("$rel")
     echo "  ✅ $rel -> $dep"
 done
