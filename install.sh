@@ -64,6 +64,17 @@ deploy_bin() {
 }
 
 echo ""
+echo "💾 备份现有部署..."
+BK_DIR="$REAL_HOME/hermes-vip-backup-$(date +%Y%m%d-%H%M%S)"
+mkdir -p "$BK_DIR"
+[ -d "$PLUGIN_DIR" ] && cp -a "$PLUGIN_DIR" "$BK_DIR/plugins-vip" 2>/dev/null && echo "  ✅ 插件 -> $BK_DIR/plugins-vip"
+[ -d "$VIP_LIB" ] && cp -a "$VIP_LIB" "$BK_DIR/vip-lib" 2>/dev/null && echo "  ✅ daemon -> $BK_DIR/vip-lib"
+[ -f "$VIPD_BIN" ] && cp -a "$VIPD_BIN" "$BK_DIR/hermes-vipd" 2>/dev/null
+[ -f "$CTL_BIN" ] && cp -a "$CTL_BIN" "$BK_DIR/hermes-container-ctl" 2>/dev/null
+[ -f "$RUN_BIN" ] && cp -a "$RUN_BIN" "$BK_DIR/hermes-run" 2>/dev/null
+[ -f "$VIP_ETC/config.yaml" ] && cp -a "$VIP_ETC/config.yaml" "$BK_DIR/daemon-config.yaml" 2>/dev/null
+echo "  💾 备份目录: $BK_DIR"
+
 echo "🧹 清理旧部署..."
 if [ "$IS_LINUX" = "1" ]; then
     systemctl stop hermes-vipd 2>/dev/null || true
@@ -138,15 +149,16 @@ if [ "$IS_LINUX" = "1" ]; then
     fi
     echo "  ✅ docker $(docker --version 2>/dev/null | grep -oE '[0-9.]+' | head -1)"
 else
+    # macOS: brew/colima 必须用真实用户上下文（brew 拒绝 root）
     if ! command -v docker &>/dev/null; then
         echo "  📦 brew install colima docker..."
-        brew install colima docker
+        sudo -u "$REAL_USER" brew install colima docker
     fi
-    if ! docker context ls 2>/dev/null | grep -q colima; then
+    if ! sudo -u "$REAL_USER" docker context ls 2>/dev/null | grep -q colima; then
         echo "  🚀 colima start..."
-        colima start --memory 2
+        sudo -u "$REAL_USER" colima start --memory 2
     fi
-    docker context use colima || true
+    sudo -u "$REAL_USER" docker context use colima || true
     echo "  ✅ docker (Colima)"
 fi
 
