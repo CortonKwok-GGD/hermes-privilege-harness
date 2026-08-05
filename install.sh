@@ -36,6 +36,11 @@ MIN_HERMES="0.18.0"
 hermes_version() { "$1" --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || echo "0.0.0"; }
 version_gte() { printf '%s\n%s\n' "$2" "$1" | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | grep -qx "$1"; }
 HERMES_BIN="$(sudo -u "$REAL_USER" which hermes 2>/dev/null || echo "$HERMES_HOME/bin/hermes")"
+if [ ! -x "$HERMES_BIN" ]; then
+    echo "❌ 未检测到 Hermes Agent"
+    echo "   先安装 Hermes (https://hermes-agent.nousresearch.com/docs), 再运行本脚本"
+    exit 1
+fi
 HERMES_VER="$(hermes_version "$HERMES_BIN")"
 if ! version_gte "$HERMES_VER" "$MIN_HERMES"; then
     echo "❌ Hermes $HERMES_VER < $MIN_HERMES（不支持原生审批卡片）"; exit 1
@@ -150,6 +155,12 @@ if [ "$IS_LINUX" = "1" ]; then
     echo "  ✅ docker $(docker --version 2>/dev/null | grep -oE '[0-9.]+' | head -1)"
 else
     # macOS: brew/colima 必须用真实用户上下文（brew 拒绝 root）
+    if ! command -v brew &>/dev/null; then
+        echo "  📦 安装 Homebrew（需要你按提示确认 Enter/密码）..."
+        sudo -u "$REAL_USER" bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)" || {
+            echo "  ❌ Homebrew 安装失败，请手动安装: https://brew.sh"; exit 1
+        }
+    fi
     if ! command -v docker &>/dev/null; then
         echo "  📦 brew install colima docker..."
         sudo -u "$REAL_USER" brew install colima docker
@@ -192,6 +203,7 @@ else
 fi
 
 echo "🧪 验证..."
+docker version --format 'server {{.Server.Version}}' 2>/dev/null | sed 's/^/  /' || true
 sleep 2
 sudo -u "$REAL_USER" "$CTL_BIN" status 2>&1 | head -5
 python3 - "$VIP_RUN/request.sock" <<'PYEOF'
