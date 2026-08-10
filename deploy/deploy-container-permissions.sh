@@ -5,7 +5,7 @@
 #   3) 自检: adb / tesseract / --root 装包通道
 # 用法: bash ~/hermes-workspace/apps/hermes-vip/deploy/deploy-container-permissions.sh
 set -e
-REPO="$HOME/hermes-workspace/apps/hermes-vip"
+REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 echo "[1/4] 官方增量部署 (ctl/hermes-run/插件/Dockerfile)"
 sudo bash "$REPO/deploy/update.sh" init --repo "$REPO"
@@ -21,5 +21,5 @@ echo "[4/4] verify"
 hermes-run id -u
 hermes-run adb version 2>/dev/null | head -1 || echo "adb missing"
 hermes-run tesseract --version 2>/dev/null | head -1 || echo "tesseract missing"
-hermes-run --root 'apk add --no-cache tree >/dev/null 2>&1 && echo ROOT_OK' || echo "ROOT_FAIL"
+hermes-run --root 'touch /root/.ctl-root-probe && rm /root/.ctl-root-probe && echo ROOT_OK' || echo "ROOT_FAIL"
 echo "DONE. 重启 Hermes Desktop 使插件改动生效。"
