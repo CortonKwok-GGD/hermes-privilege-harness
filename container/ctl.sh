@@ -298,9 +298,13 @@ cmd_rebuild() {
 cmd_build() {
     local dockerfile="${CTL_DIR}/Dockerfile.hermes-vm"
     [ -f "$dockerfile" ] || dockerfile="/usr/local/lib/hermes-vip/Dockerfile.hermes-vm"
+    local no_cache=""
+    [ "${1:-}" = "--no-cache" ] && no_cache="--no-cache"
     read_config_vals
-    echo "Building image $IMG from $dockerfile (driver=$DRIVER)"
-    $SUDO_PREFIX $CLI build $BUILD_ARCH_FLAG -t "$IMG" -f "$dockerfile" "$(dirname "$dockerfile")"
+    echo "Building image $IMG from $dockerfile (driver=$DRIVER)${no_cache:+ --no-cache}"
+    $SUDO_PREFIX $CLI build $no_cache $BUILD_ARCH_FLAG -t "$IMG" -f "$dockerfile" "$(dirname "$dockerfile")"
+    echo "Self-check image contents..."
+    $SUDO_PREFIX $CLI run --rm "$IMG" sh -c 'for b in adb tesseract python3 git; do command -v "$b" >/dev/null 2>&1 && echo "  ok $b" || echo "  MISSING $b"; done'
 }
 
 cmd_list() {

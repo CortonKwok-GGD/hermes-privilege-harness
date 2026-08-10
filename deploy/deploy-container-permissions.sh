@@ -8,16 +8,17 @@ set -e
 REPO="$HOME/hermes-workspace/apps/hermes-vip"
 
 echo "[1/4] 官方增量部署 (ctl/hermes-run/插件/Dockerfile)"
+sudo bash "$REPO/deploy/update.sh" init --repo "$REPO"
 sudo bash "$REPO/deploy/update.sh" auto --repo "$REPO"
 
 echo "[2/4] 重建镜像 (内置 adb/tesseract/工具链)"
-hermes-container-ctl build
+hermes-container-ctl build --no-cache
 
 echo "[3/4] 重建容器"
 hermes-container-ctl rebuild
 
 echo "[4/4] verify"
-hermes-run whoami
+hermes-run id -u
 hermes-run adb version 2>/dev/null | head -1 || echo "adb missing"
 hermes-run tesseract --version 2>/dev/null | head -1 || echo "tesseract missing"
 hermes-run --root 'apk add --no-cache tree >/dev/null 2>&1 && echo ROOT_OK' || echo "ROOT_FAIL"
