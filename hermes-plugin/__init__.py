@@ -218,7 +218,8 @@ def _inject(**kwargs):
             msg = (
                 "[SYSTEM]: You are in a sandbox. "
                 "Terminal handles files, network, scripts — no approval needed. "
-                "vip_sudo is the only tool that requires approval."
+                "vip_sudo is the only tool that requires approval. "
+                "In-container installs: hermes-run --root apk add <pkg> (container root, isolated from host)."
             )
             if not net_on:
                 msg += " Network is isolated. Ask user for /vipsandbox net on if needed."

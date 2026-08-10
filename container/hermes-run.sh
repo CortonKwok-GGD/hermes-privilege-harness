@@ -12,8 +12,10 @@ RUN_LOG="/var/log/hermes-vip/run.log"
 RUN_LOG_MAX_BYTES=10485760   # 10MB
 
 NO_NET=0
+ROOT=0
+[ "${1:-}" = "--root" ] && ROOT=1 && shift
 [ "${1:-}" = "--no-net" ] && NO_NET=1 && shift
-[ $# -eq 0 ] && echo "Usage: hermes-run [--no-net] <command>" >&2 && exit 1
+[ $# -eq 0 ] && echo "Usage: hermes-run [--root] [--no-net] <command>" >&2 && exit 1
 CTL="${HERMES_CONTAINER_CTL:-/usr/local/bin/hermes-container-ctl}"
 
 # ── FIFO 滚动 + 追加（无 sudo，纯组权限）──
@@ -31,11 +33,11 @@ _append_run_log() {
 
 # ── 执行 + 记录退出码/耗时 ──
 _start=$(date +%s%N 2>/dev/null || date +%s)
-if [ "$NO_NET" = "1" ]; then
-    "$CTL" exec --no-net "$@"
-else
-    "$CTL" exec "$@"
-fi
+ARGS=()
+[ "$ROOT" = "1" ] && ARGS+=(--root)
+[ "$NO_NET" = "1" ] && ARGS+=(--no-net)
+"$CTL" exec "${ARGS[@]}" "$@"
+
 _rc=$?
 _end=$(date +%s%N 2>/dev/null || date +%s)
 _dur_ms=$(( (_end - _start) / 1000000 ))

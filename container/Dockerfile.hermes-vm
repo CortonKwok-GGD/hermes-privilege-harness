@@ -1,3 +1,7 @@
 FROM alpine:3.20
-RUN apk add --no-cache python3 py3-pip git curl bash jq file findutils grep sed coreutils openssh-client socat
+RUN apk add --no-cache python3 py3-pip git curl bash jq file findutils grep sed coreutils openssh-client socat \
+    gcc musl-dev python3-dev make cmake linux-headers binutils \
+    zip unzip rsync wget ca-certificates \
+    android-tools \
+    tesseract-ocr tesseract-ocr-data-eng tesseract-ocr-data-chi_sim
 CMD ["sleep", "infinity"]

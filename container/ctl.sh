@@ -149,9 +149,14 @@ cmd_exec() {
             exit 1
         fi
     fi
-    local no_net=0 cname
+    local no_net=0 cname root_user=""
+    [ "${1:-}" = "--root" ] && root_user="0:0" && shift
     [ "${1:-}" = "--no-net" ] && no_net=1 && shift
-    [ $# -eq 0 ] && echo "Usage: ctl exec [--no-net] <command>" >&2 && exit 1
+    [ $# -eq 0 ] && echo "Usage: ctl exec [--root] [--no-net] <command>" >&2 && exit 1
+    if [ -n "$root_user" ] && [ "$DRIVER" != "docker" ]; then
+        echo "Error: --root only supported on docker driver (container CLI has no -u)" >&2
+        exit 1
+    fi
     read_config_vals
     cname="$CN"
     [ "$no_net" = "1" ] && cname="${CN}-no-net"
@@ -195,7 +200,9 @@ cmd_exec() {
     EXEC_ENV=""
     [ "$DRIVER" = "docker" ] && EXEC_ENV="-e HOME=$HOME"
     exec_once() {
-        echo "$input" | $SUDO_PREFIX $CLI exec -i $EXEC_ENV $EXEC_USER_FLAG "$cname" sh 2>&1
+        local user_flag="$EXEC_USER_FLAG"
+        [ -n "$root_user" ] && user_flag="-u $root_user"
+        echo "$input" | $SUDO_PREFIX $CLI exec -i $EXEC_ENV $user_flag "$cname" sh 2>&1
         return ${PIPESTATUS[1]:-0}
     }
 
@@ -328,7 +335,7 @@ case "${1:-}" in
     stop)    shift; $SUDO_PREFIX $CLI stop "${1:-hermes-vm}" ;;
     rm)      shift; $SUDO_PREFIX $CLI rm "${1:-hermes-vm}" ;;
     *)
-        echo "Usage: $0 {exec|create|rebuild|build|list|status|start|stop|rm} [--no-net] [args...]" >&2
+        echo "Usage: $0 {exec|create|rebuild|build|list|status|start|stop|rm} [--root] [--no-net] [args...]" >&2
         exit 1
         ;;
 esac

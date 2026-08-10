@@ -48,7 +48,7 @@
 - **挂载统一**: config 一份两端通用（workspace 独立挂载 rw + config/profiles ro + hermes-vm-root）。
 - **根持久化**: docker 无法挂 /（OCI 硬限制, podman/runc 同样）→ ctl.sh 展开为
   root_persist_dirs 系统目录挂载 + 首次初始化（cp -a + chown 宿主 UID）。
-  容器内装包被禁（uid 1001 无 apk 权限）→ 装包走镜像层。
+  容器内装包: hermes-run --root <cmd>（容器内 root 通道, docker namespace 隔离, 不构成宿主提权; 宿主出口仍 vip_sudo）。装包持久化走镜像层(Dockerfile)。
 - **multipass 否决**: 167 无 KVM + snapcraft/PPA 渠道全断 + alpine 无 cloud-init（multipass 自定义镜像硬要求）。
 - **Mac 端 Colima 方向**: brew install colima docker → VM 内 dockerd + 标准 docker CLI，
   ctl.sh driver=docker 两端一致。Apple container 对比: 每容器一 VM (2×2G 配额) vs Colima 单 VM 2G。

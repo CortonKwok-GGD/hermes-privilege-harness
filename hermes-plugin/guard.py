@@ -324,6 +324,10 @@ def check(tool_name: str, args: dict, **kw) -> dict | None:
             if vs_on:
                 return {"action": "block", "message": _sudo_block_message()}
             return None  # system sudo
+        # 已显式沙箱包装（hermes-run [--root] [--no-net] <cmd>）→ 透传，避免二次包装。
+        # 容器内 root 受 docker namespace 隔离，不构成宿主提权；宿主出口仍是 vip_sudo。
+        if cmd.lstrip().startswith("hermes-run"):
+            return None
         wrapped = sandbox.build_sandbox_cmd(cmd)
         if wrapped != cmd:
             args["command"] = wrapped
