@@ -42,6 +42,7 @@ mapping = [
     # 容器控制
     ("container/ctl.sh",            os.environ["CTL_BIN"]),
     ("container/hermes-run.sh",     os.environ["RUN_BIN"]),
+    ("container/Dockerfile.hermes-vm", os.path.join(os.environ["VIP_LIB"], "Dockerfile.hermes-vm")),
     # 服务模板
     # config.yaml / blocklist.yaml 是用户配置: install 时生成/更新, 但 update.sh
     # 不比对 repo 模板(apply 会用模板覆盖丢失 trusted_user / 用户自定义 blocklist)
