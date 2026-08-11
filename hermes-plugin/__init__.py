@@ -55,8 +55,14 @@ def _market_intel_ssh(args: dict) -> str:
         cmd = f"/usr/local/bin/market-intel {shlex.quote(str(raw_args))}"
 
     try:
+        # 显式直连 tinc (10.0.0.6), -F /dev/null 不读 ~/.ssh/config:
+        # 防止 ProxyJump 把 tinc 备路拖回 LAN 依赖 (LNP 复发时 167 LAN 被拦, 但 tinc 网免疫)
+        # 2026-08-11 方案A(network.address)后容器可直连 tinc 网, 已实测
         result = subprocess.run(
-            ["ssh", "hermes-test@10.0.0.6", cmd],
+            ["ssh", "-F", "/dev/null", "-o", "ConnectTimeout=8",
+             "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+             "-i", "/root/.ssh/id_ed25519",
+             "hermes-test@10.0.0.6", cmd],
             capture_output=True, text=True,
             timeout=60,
         )

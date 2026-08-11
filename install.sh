@@ -175,8 +175,11 @@ else
         sudo -u "$REAL_USER" brew install colima docker
     fi
     if ! sudo -u "$REAL_USER" docker context ls 2>/dev/null | grep -q colima; then
-        echo "  🚀 colima start..."
-        sudo -u "$REAL_USER" colima start --memory 2
+        echo "  🚀 colima start (--network-address: 修 macOS LNP 拦容器访 LAN)..."
+        # network-address=true -> vmnet 内核 NAT 替代 usernet slirp (usernet 无 LNP 授权会被 macOS Local Network Privacy 拦 LAN TCP)
+        # 2026-08-11 实测: 仅 macOS 生效, Linux docker 分支不受影响; tinc 内网 10.0.0.x 不受破坏
+        # 注意: flag 仅新建 VM 生效; 已有实例需改 ~/.colima/default/colima.yaml network.address: true + colima restart
+        sudo -u "$REAL_USER" colima start --memory 2 --network-address
     fi
     sudo -u "$REAL_USER" docker context use colima || true
     # 注册 colima 登录自启（重启后 docker 自动可用, 对齐 Linux systemctl enable docker）
