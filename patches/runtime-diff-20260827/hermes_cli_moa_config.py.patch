@@ -1,0 +1,23 @@
+--- /Users/mac/hermes-workspace/hermes-agent/hermes_cli/moa_config.py	2026-08-07 16:50:13
++++ /Users/mac/.hermes/hermes-agent/hermes_cli/moa_config.py	2026-08-07 16:41:01
+@@ -11,14 +11,14 @@
+ MOA_MARKER_PREFIX = "__HERMES_MOA_TURN_V1__"
+ DEFAULT_MOA_PRESET_NAME = "default"
+ 
+-DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = [
+-    {"provider": "openai-codex", "model": "gpt-5.5"},
+-    {"provider": "openrouter", "model": "deepseek/deepseek-v4-pro"},
+-]
++# VIP patch 2026-08-05: default MoA preset referenced unsubscribed providers
++# (openai-codex / openrouter) and slowed startup. Kept empty; user presets
++# come from config.yaml only.
++DEFAULT_MOA_REFERENCE_MODELS: list[dict[str, str]] = []
+ 
+ DEFAULT_MOA_AGGREGATOR: dict[str, str] = {
+-    "provider": "openrouter",
+-    "model": "anthropic/claude-opus-4.8",
++    "provider": "",
++    "model": "",
+ }
+ 
+ DEFAULT_MOA_REFERENCE_TIMEOUT: float | None = None
