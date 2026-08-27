@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import socket
 import struct
 import subprocess
@@ -295,6 +296,65 @@ _FILE_TOOL_HINTS = {
 }
 
 
+# ── 媒体 staging：宿主裸路径 → 容器可见路径 ──
+
+def _stage_media_for_container(path: str) -> str:
+    """Host paths are invisible in the tool sandbox (only ~/hermes-workspace
+    and the mounted .hermes leaves are visible). Copy bytes from a host-only
+    path into the workspace media dir so sandboxed tools can read it.
+    Returns the original path when it is already container-visible or unreadable."""
+    if not path:
+        return path
+    p = os.path.abspath(os.path.expanduser(path.strip()))
+    ws = os.path.abspath(os.path.expanduser("~/hermes-workspace"))
+    if p == ws or p.startswith(ws + os.sep):
+        return p  # workspace is mounted rw — already visible
+    if not os.path.isfile(p):
+        return path  # cannot stage what we cannot read — leave for honest failure
+    media_dir = os.path.join(ws, "tmp", "hermes-media", "flat-images")
+    try:
+        os.makedirs(media_dir, exist_ok=True)
+        dest = os.path.join(media_dir, f"guard_{int(time.time())}_{os.path.basename(p)}")
+        shutil.copy2(p, dest)
+        logger.info("guard: staged host media %s -> %s", p, dest)
+        return dest
+    except Exception as exc:
+        logger.warning("guard: stage failed for %s: %s", p, exc)
+        return path
+
+
+# ── 终端命令中的宿主媒体路径 → staging（hermes-run 包装点拦截）──
+
+_QUOTED_PATH_RE = re.compile(r"""(['"])((?:/Users/|/home/|~/)[^'"]*)\1""")
+_UNQUOTED_PATH_RE = re.compile(r"(?:/Users/[^/'\"]+|/home/[^/'\"]+)(?:/[^\s'\"\\]+)+|~/[^\s'\"\\]+")
+_MEDIA_EXT = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".heic", ".heif", ".tiff", ".tif", ".pdf")
+
+
+def _stage_paths_in_cmd(cmd: str) -> str:
+    """Rewrite host-only media paths inside a terminal command to staged
+    container-visible paths (copy bytes into the workspace media dir).
+    Runs at the hermes-run wrap point, so sandboxed tools can read files
+    that only exist on the host (e.g. ~/Desktop attachments)."""
+    if not cmd:
+        return cmd
+    ws = os.path.abspath(os.path.expanduser("~/hermes-workspace"))
+
+    def _stage_one(token: str) -> str:
+        if not token or token.startswith(ws) or "/hermes-media/" in token:
+            return token  # 已容器可见
+        expanded = os.path.expanduser(token)
+        if not os.path.isfile(expanded) or not expanded.lower().endswith(_MEDIA_EXT):
+            return token  # 非文件/非媒体类型不碰
+        staged = _stage_media_for_container(expanded)
+        return staged if staged != expanded else token
+
+    # 先处理引号包裹的路径（含空格文件名，如 macOS 截屏）
+    cmd = _QUOTED_PATH_RE.sub(lambda m: m.group(1) + _stage_one(m.group(2)) + m.group(1), cmd)
+    # 再处理未加引号的路径 token
+    cmd = _UNQUOTED_PATH_RE.sub(lambda m: _stage_one(m.group(0)), cmd)
+    return cmd
+
+
 def check(tool_name: str, args: dict, **kw) -> dict | None:
     if sandbox.in_sandbox():
         return None
@@ -329,6 +389,8 @@ def check(tool_name: str, args: dict, **kw) -> dict | None:
         if cmd.lstrip().startswith("hermes-run"):
             args["command"] = cmd.replace("hermes-run", "/usr/local/bin/hermes-run", 1)
             return None
+        # 宿主媒体路径 → staging（拷贝到容器可见目录并改写命令），再包 hermes-run
+        cmd = _stage_paths_in_cmd(cmd)
         wrapped = sandbox.build_sandbox_cmd(cmd)
         if wrapped != cmd:
             args["command"] = wrapped
@@ -347,6 +409,18 @@ print(result.stdout or result.stderr)
 
     # ── 出路 2: 进程内函数 → block，引导用 terminal ──
     if tool_name in _FILE_TOOL_HINTS:
+        _hint_path = ""
+        for _key in ("path", "file_path", "image", "file"):
+            _p = args.get(_key)
+            if isinstance(_p, str) and _p:
+                _staged = _stage_media_for_container(_p)
+                if _staged != _p:
+                    args[_key] = _staged
+                _hint_path = _staged
+        if tool_name == "vision_analyze":
+            return {"action": "block", "message": f"Use terminal: python3 -c \"from PIL import Image; Image.open('{_hint_path}')\""}
+        if tool_name == "read_file":
+            return {"action": "block", "message": f"Use terminal: cat {_hint_path}"}
         return {"action": "block", "message": _FILE_TOOL_HINTS[tool_name]}
 
     # ── 放行白名单（已知不碰文件系统的数据工具）──
