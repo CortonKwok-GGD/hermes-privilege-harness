@@ -63,8 +63,8 @@ MAX_FRAME_SIZE = 1024 * 1024  # 1MB
 SOCKET_BACKLOG = 32
 REAPER_INTERVAL = 10  # 秒
 POLL_TIMEOUT = 1.0  # socket.accept() 超时
-CAP_TTL = 24 * 3600  # stamp cap 有效期(秒): 超时未用自动清理
-CAP_MAX = 100  # 同 uid 并存 cap 上限, 超出删最老
+CAP_TTL = 24 * 3600  # stamp cap 有效时长（秒）：超时未用即被 reaper 清理
+CAP_MAX = 100  # stamp cap 数量上限：超出删最老，防泄漏无限增长
 
 # ── 消息类型常量 ──
 MSG_SUDO_REQUEST = "sudo_request"
@@ -262,10 +262,8 @@ class SocketServer:
         # 线程池（非阻塞任务用，审批等待不占用线程池）
         self._pool = ThreadPoolExecutor(max_workers=10)
 
-        # daemon-issued stamp capabilities: cap_b64 -> peer_uid
-        # cap_b64 -> (peer_uid, issued_at)。多 cap 并存: 同 uid 多进程(Hermes Desktop
-        # 多实例/会话)各自注册各自持有, 后注册不再踢先注册(旧实现导致
-        # REJECTED: unknown capability)。过期 cap 由 _reaper_loop 清理。
+        # daemon-issued stamp capabilities: cap_b64 -> (peer_uid, issued_at)
+        # 允许多 cap 并存（同 uid 多进程各持一个），reaper 按 CAP_TTL 清理过期项
         self._capabilities: dict[str, tuple[int, float]] = {}
 
         # 连接器注册（name → send_approval_request 回调）
@@ -417,15 +415,16 @@ class SocketServer:
         cap = os.urandom(32)
         cap_b64 = base64.b64encode(cap).decode()
         now = time.time()
-        # 多 cap 并存: 不删除同 uid 旧 cap(同 uid 多进程各自持有各自 cap)。
-        # 清理只在超上限时删最老, 其余由 reaper 按 TTL 回收。
+        # 多 cap 并存：同 uid 多进程（Hermes Desktop 多实例）各持一个 cap，
+        # 后注册不删先注册的（旧实现每 uid 单 cap 导致同 uid 进程互踢 → REJECTED: unknown capability）
         self._capabilities[cap_b64] = (peer_uid, now)
+        # 上限保护：超出 CAP_MAX 删最老（含过期项），防 cap 无限增长
         if len(self._capabilities) > CAP_MAX:
-            oldest = min(self._capabilities,
-                         key=lambda k: self._capabilities[k][1])
-            del self._capabilities[oldest]
-            logger.warning("cap table over CAP_MAX=%d, pruned oldest", CAP_MAX)
-        logger.info("stamp capability issued peer_uid=%d", peer_uid)
+            for stale in sorted(self._capabilities,
+                                key=lambda k: self._capabilities[k][1])[:len(self._capabilities) - CAP_MAX]:
+                del self._capabilities[stale]
+        logger.info("stamp capability issued peer_uid=%d (total caps=%d)",
+                    peer_uid, len(self._capabilities))
         _send_json(client, {"status": "ok", "cap": cap_b64})
 
     def _handle_sudo_request(self, client: socket.socket, req: dict):
@@ -525,12 +524,12 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "REJECTED: capability required"})
             return
 
-        cap_entry = self._capabilities.get(cap_b64)
-        cap_owner = cap_entry[0] if cap_entry else None
-        if cap_owner is None:
+        entry = self._capabilities.get(cap_b64)
+        if entry is None:
             _send_json(client, {"status": "error", "error": "REJECTED: unknown capability"})
             logger.warning("sudo_execute REJECTED: unknown cap peer=%d", peer_uid)
             return
+        cap_owner, _ = entry
         if cap_owner != peer_uid:
             _send_json(client, {"status": "error", "error": "REJECTED: capability not bound to peer"})
             logger.warning("sudo_execute REJECTED: cap owner %d != peer %d",
@@ -680,7 +679,7 @@ class SocketServer:
     # ── Reaper ──
 
     def _reaper_loop(self):
-        """后台线程：定期收割过期请求 + 过期 cap"""
+        """后台线程：定期收割过期请求与过期 stamp cap"""
         while self._running:
             try:
                 self._queue.reap_expired()
@@ -690,11 +689,12 @@ class SocketServer:
             time.sleep(REAPER_INTERVAL)
 
     def _reap_expired_caps(self):
-        """清理超过 CAP_TTL 未用的 stamp cap, 防止多 cap 并存导致表无限增长"""
+        """删除超过 CAP_TTL 未使用的 stamp cap，防无限增长。"""
         now = time.time()
         stale = [k for k, (_, issued) in self._capabilities.items()
                  if now - issued > CAP_TTL]
         for k in stale:
             del self._capabilities[k]
         if stale:
-            logger.info("reaper pruned %d expired caps", len(stale))
+            logger.info("reaper: pruned %d expired stamp cap(s), remaining=%d",
+                        len(stale), len(self._capabilities))
