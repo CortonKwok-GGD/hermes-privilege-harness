@@ -63,6 +63,8 @@ MAX_FRAME_SIZE = 1024 * 1024  # 1MB
 SOCKET_BACKLOG = 32
 REAPER_INTERVAL = 10  # 秒
 POLL_TIMEOUT = 1.0  # socket.accept() 超时
+CAP_TTL = 24 * 3600  # stamp cap 有效期(秒): 超时未用自动清理
+CAP_MAX = 100  # 同 uid 并存 cap 上限, 超出删最老
 
 # ── 消息类型常量 ──
 MSG_SUDO_REQUEST = "sudo_request"
@@ -261,7 +263,10 @@ class SocketServer:
         self._pool = ThreadPoolExecutor(max_workers=10)
 
         # daemon-issued stamp capabilities: cap_b64 -> peer_uid
-        self._capabilities: dict[str, int] = {}
+        # cap_b64 -> (peer_uid, issued_at)。多 cap 并存: 同 uid 多进程(Hermes Desktop
+        # 多实例/会话)各自注册各自持有, 后注册不再踢先注册(旧实现导致
+        # REJECTED: unknown capability)。过期 cap 由 _reaper_loop 清理。
+        self._capabilities: dict[str, tuple[int, float]] = {}
 
         # 连接器注册（name → send_approval_request 回调）
         self._connectors: dict[str, Callable] = {}
@@ -411,10 +416,15 @@ class SocketServer:
         """
         cap = os.urandom(32)
         cap_b64 = base64.b64encode(cap).decode()
-        for old in [k for k, v in self._capabilities.items()
-                    if v == peer_uid]:
-            del self._capabilities[old]
-        self._capabilities[cap_b64] = peer_uid
+        now = time.time()
+        # 多 cap 并存: 不删除同 uid 旧 cap(同 uid 多进程各自持有各自 cap)。
+        # 清理只在超上限时删最老, 其余由 reaper 按 TTL 回收。
+        self._capabilities[cap_b64] = (peer_uid, now)
+        if len(self._capabilities) > CAP_MAX:
+            oldest = min(self._capabilities,
+                         key=lambda k: self._capabilities[k][1])
+            del self._capabilities[oldest]
+            logger.warning("cap table over CAP_MAX=%d, pruned oldest", CAP_MAX)
         logger.info("stamp capability issued peer_uid=%d", peer_uid)
         _send_json(client, {"status": "ok", "cap": cap_b64})
 
@@ -515,7 +525,8 @@ class SocketServer:
             _send_json(client, {"status": "error", "error": "REJECTED: capability required"})
             return
 
-        cap_owner = self._capabilities.get(cap_b64)
+        cap_entry = self._capabilities.get(cap_b64)
+        cap_owner = cap_entry[0] if cap_entry else None
         if cap_owner is None:
             _send_json(client, {"status": "error", "error": "REJECTED: unknown capability"})
             logger.warning("sudo_execute REJECTED: unknown cap peer=%d", peer_uid)
@@ -669,10 +680,21 @@ class SocketServer:
     # ── Reaper ──
 
     def _reaper_loop(self):
-        """后台线程：定期收割过期请求"""
+        """后台线程：定期收割过期请求 + 过期 cap"""
         while self._running:
             try:
                 self._queue.reap_expired()
+                self._reap_expired_caps()
             except Exception as exc:
                 logger.error("reaper error: %s", exc)
             time.sleep(REAPER_INTERVAL)
+
+    def _reap_expired_caps(self):
+        """清理超过 CAP_TTL 未用的 stamp cap, 防止多 cap 并存导致表无限增长"""
+        now = time.time()
+        stale = [k for k, (_, issued) in self._capabilities.items()
+                 if now - issued > CAP_TTL]
+        for k in stale:
+            del self._capabilities[k]
+        if stale:
+            logger.info("reaper pruned %d expired caps", len(stale))
