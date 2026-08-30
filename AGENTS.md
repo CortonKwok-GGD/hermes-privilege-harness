@@ -106,7 +106,9 @@ vip_sudo:
    `sandbox.container.driver: docker` 显式读（HERMES_CONTAINER_DRIVER 环境变量优先，uname 回退）。
    Colima registry mirror 用 **build 前预拉镜像兜底**（docker pull docker.1panel.live/library/alpine:3.20
    + tag），因为 --registry-mirror flag 是 master 未 release、colima.yaml 注入 restart 不重载。
-10. **vip_sudo cap 与 daemon 进程绑定**: daemon 重启后旧 Hermes 会话 REJECTED unknown capability →
+10. **vip_sudo cap 同 uid 多进程互踢(实测 2026-08-30)**: 根因是 stamp_init 旧实现删同 uid 旧 cap,
+    多进程先后注册后先注册的 cap 失效(非 daemon 重启旧 cap)。已修复: 多 cap 并存 + TTL 24h + 上限 100。
+    daemon 重启后旧会话 REJECTED 属 cap 轮换设计 →
     重启 Hermes。terminal 沙箱不重启即生效（插件每次读 runtime config）。
 11. **install.sh 安装期间临时禁沙箱**: sandbox.enabled: false → 容器建好才置 true。
     否则容器未就绪时 Hermes terminal 全锁（"container hermes-vm does not exist"）。

@@ -77,7 +77,12 @@ install.sh 全流程通过：Colima + docker driver + 双容器 + daemon active 
 4. **install.sh 安装期间临时禁沙箱**（sandbox.enabled: false）→ 容器建好才启用——
    否则容器未就绪时 Hermes terminal 全锁（本次实际踩到：install 失败期间 agent 所有 terminal 调用报
    "container hermes-vm does not exist"）
-5. **vip_sudo cap 与 daemon 进程绑定**：daemon 重启后旧会话 REJECTED unknown capability → 需重启 Hermes
+5. **vip_sudo cap 同 uid 多进程互踢(实测 2026-08-30)**：stamp_init 旧实现每次发放 cap 先删同 uid 旧 cap，
+   Hermes Desktop 多进程(同 uid=501)先后注册 → 后注册踢先注册 → 先注册进程 vip_sudo 报
+   `REJECTED: unknown capability`(审计无记录,拒绝发生在 audit 之前)。
+   已修复(方案B): `_capabilities` 值改 (peer_uid, issued_at)，stamp_init 只追加不删除,
+   reaper 每 10s 清超 24h cap, 超 CAP_MAX=100 删最老; 客户端 guard.py 零改动。
+   注意: daemon 重启后 cap 表清空, 旧会话仍会 REJECTED(属 cap 轮换设计, 需重启 Hermes 重新注册)
    （新会话重新 stamp_init）。terminal 沙箱不重启即生效（插件读 runtime config）
 6. **git identity**：容器环境全局 git config 不可靠（Author identity unknown）→ 仓库级
    git config user.name/email 设置
@@ -795,7 +800,7 @@ stamp 机制是「自证」（客户端自铸 secret+nonce），approval 队列�
 
 | 文件 | 变更 |
 |------|------|
-| daemon/socket_server.py | request.sock accept 即 SO_PEERCRED 校验（非 TRUSTED_UIDS 直接拒）；stamp_init 由 daemon 签发 cap（os.urandom(32)）绑定 peer_uid，客户端不能自铸；sudoexec 三重校验（cap 归属 + HMAC-SHA256(command,cap) + peer）；移除 200 注册上限 clear，cap 按 peer 单发轮换；socket 0660 |
+| daemon/socket_server.py | request.sock accept 即 SO_PEERCRED 校验（非 TRUSTED_UIDS 直接拒）；stamp_init 由 daemon 签发 cap（os.urandom(32)）绑定 peer_uid，客户端不能自铸；sudoexec 三重校验（cap 归属 + HMAC-SHA256(command,cap) + peer）；移除 200 注册上限 clear，cap 按 uid 多 cap 并存(TTL 24h 清理, 上限 100 删最老, 同 uid 多进程不互踢)；socket 0660 |
 | hermes-plugin/guard.py | _stamps 存完整命令 sha256 key + TTL + HMAC 值比较（原 command[:120] 前缀成员检查可绕过）；_register_stamp_cap() 启动时向 daemon 要 cap |
 | install.sh | 显式建组、socket 0660、config.yaml 生成（trusted_user 必需，否则 systemd 下 TRUSTED_UIDS={0} 插件连不上）、sudoers、插件自动安装 |
 | README.md | EXPERIMENTAL banner（B 方案，defense-in-depth 非 root 安全边界）+ 权限模型修正 |
