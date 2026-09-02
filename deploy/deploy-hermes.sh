@@ -40,6 +40,15 @@ echo ""
 echo "→ 打 VIP patch（全部）..."
 HERMES_REPO="$DST" bash "$VIP/deploy/dd-patches.sh" all
 
+# deploy-sync 只同步文件、不动 runtime 的 git refs → 版本检测(读 git HEAD +
+# .update_check 缓存)会报假的 10k+ behind。把 ref 指到官方最新并清缓存
+# (2026-09-02 实测: hermes --version 在 deploy 后报 10145 commits behind)。
+if [ -d "$DST/.git" ]; then
+    git -C "$DST" fetch origin main -q 2>/dev/null || true
+    git -C "$DST" update-ref refs/heads/main refs/remotes/origin/main 2>/dev/null || true
+fi
+rm -f "$(dirname "$DST")/.update_check" 2>/dev/null || true
+
 echo ""
 echo "━━━ 完成 ━━━"
 echo "请重启 Desktop 使变更生效"
